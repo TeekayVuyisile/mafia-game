@@ -1,0 +1,159 @@
+:root {
+  /* Main Theme Colors */
+  --bg-primary: #0b0b0b;
+  --bg-secondary: #1a1a1a;
+  --accent-gold: #c8a96b;
+  --accent-gold-glow: rgba(200, 169, 107, 0.3);
+  
+  /* Role Colors */
+  --role-mafia: #8b0000;
+  --role-mafia-glow: rgba(139, 0, 0, 0.5);
+  --role-civilian: #cfc6b8;
+  --role-medic: #2e8b57;
+  
+  /* Text Colors */
+  --text-primary: #f5f5f5;
+  --text-secondary: #9a9a9a;
+  
+  /* Fonts */
+  --font-title: 'Cinzel', serif;
+  --font-ui: 'Poppins', sans-serif;
+
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-title);
+  color: var(--accent-gold);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+/* Global Effects */
+.glass-panel {
+  background: rgba(26, 26, 26, 0.6);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(200, 169, 107, 0.2);
+  border-radius: 12px;
+}
+
+.gold-border {
+  border: 1px solid var(--accent-gold);
+}
+
+.gold-glow {
+  box-shadow: 0 0 15px var(--accent-gold-glow);
+}
+
+.gold-text {
+  color: var(--accent-gold);
+}
+
+/* Buttons */
+
+.btn-gold {
+  background-color: transparent;
+  color: var(--accent-gold);
+  border: 1px solid var(--accent-gold);
+  font-family: var(--font-title);
+  font-weight: bold;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.btn-gold:hover {
+  background-color: var(--accent-gold);
+  color: var(--bg-primary);
+  box-shadow: 0 0 20px var(--accent-gold-glow);
+}
+
+.btn-mafia {
+  background-color: var(--role-mafia);
+  color: white;
+  border: none;
+  font-family: var(--font-title);
+}
+
+.btn-mafia:hover {
+  background-color: #b22222;
+  box-shadow: 0 0 20px var(--role-mafia-glow);
+}
+
+/* Animations */
+@keyframes red-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(139, 0, 0, 0.7); }
+  70% { box-shadow: 0 0 0 15px rgba(139, 0, 0, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(139, 0, 0, 0); }
+}
+
+.pulse-red {
+  animation: red-pulse 2s infinite;
+}
+
+@keyframes gold-pulse {
+  0% { border-color: rgba(200, 169, 107, 0.4); }
+  50% { border-color: rgba(200, 169, 107, 1); box-shadow: 0 0 10px var(--accent-gold-glow); }
+  100% { border-color: rgba(200, 169, 107, 0.4); }
+}
+
+.pulse-gold {
+  animation: gold-pulse 2s infinite;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-gold);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-gold);
+}
+
+/* Bootstrap Overrides */
+.card {
+  background-color: var(--bg-secondary) !important;
+  border: 1px solid rgba(200, 169, 107, 0.1) !important;
+  color: var(--text-primary) !important;
+}
+
+.list-group-item {
+  background-color: transparent !important;
+  border-color: rgba(200, 169, 107, 0.1) !important;
+  color: var(--text-primary) !important;
+}
+
+.form-control {
+  background-color: #000 !important;
+  border: 1px solid rgba(200, 169, 107, 0.3) !important;
+  color: var(--text-primary) !important;
+}
+
+.form-control:focus {
+  border-color: var(--accent-gold) !important;
+  box-shadow: 0 0 10px var(--accent-gold-glow) !important;
+}
