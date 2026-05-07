@@ -8,7 +8,7 @@ const LandingPage = ({ onEnter }) => {
       {/* Hero Section */}
       <section className="d-flex align-items-center justify-content-center py-5 position-relative" style={{ minHeight: '80vh' }}>
         <div className="position-absolute top-0 start-0 w-100 h-100" style={{ 
-          backgroundImage: 'url("/src/assets/hero.png")', 
+          backgroundImage: 'url("/hero.png")', 
           backgroundSize: 'cover', 
           backgroundPosition: 'center',
           opacity: 0.2,
