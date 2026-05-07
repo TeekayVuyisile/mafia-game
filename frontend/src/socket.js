@@ -1,7 +1,8 @@
 import { io } from 'socket.io-client';
 
-const URL = 'http://localhost:5000'; // Match your backend port
+const URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000'; // Match your backend port
 
 export const socket = io(URL, {
-    autoConnect: false
+    autoConnect: false,
+    transports: ['websocket', 'polling']  // Add this for better compatibility with render
 });
