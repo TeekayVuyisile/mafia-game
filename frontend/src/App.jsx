@@ -5,8 +5,10 @@ import RoomManager from './components/RoomManager';
 import Lobby from './components/Lobby';
 import Game from './components/Game';
 import LandingPage from './components/LandingPage';
+import Notification from './components/Notification';
 import { supabase } from './supabaseClient';
 import { socket } from './socket';
+import { AnimatePresence } from 'framer-motion';
 
 function App() {
   const [session, setSession] = useState(null);
@@ -19,6 +21,7 @@ function App() {
   const [userRole, setUserRole] = useState(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState(null);
+  const [notification, setNotification] = useState(null);
   
   const reconnectTimeout = useRef(null);
 
@@ -40,9 +43,11 @@ function App() {
     };
 
     const onRoomTerminated = ({ message }) => {
-      alert(message);
-      localStorage.removeItem('mafia-room-code');
-      window.location.reload();
+      setNotification({ message, type: 'info' });
+      setTimeout(() => {
+        localStorage.removeItem('mafia-room-code');
+        window.location.reload();
+      }, 3000);
     };
 
     const onRoomReconnected = (data) => {
@@ -145,6 +150,15 @@ function App() {
 
   return (
     <div className="App">
+      <AnimatePresence>
+        {notification && (
+          <Notification 
+            message={notification.message} 
+            type={notification.type} 
+            onClose={() => setNotification(null)} 
+          />
+        )}
+      </AnimatePresence>
       {!session ? (
         showAuth ? <Auth /> : <LandingPage onEnter={() => setShowAuth(true)} />
       ) : gameStarted && roomData ? (

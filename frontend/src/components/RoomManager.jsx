@@ -12,24 +12,30 @@ import {
   XCircleFill, 
   BoxArrowRight 
 } from 'react-bootstrap-icons';
+import Notification from './Notification';
 
 const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
   const [roomCode, setRoomCode] = useState(localStorage.getItem('mafia-room-code') || '');
   const [isEditingUsername, setIsEditingUsername] = useState(false);
   const [newUsername, setNewUsername] = useState(username);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [notification, setNotification] = useState(null);
 
   useEffect(() => {
     const handleRoomCreated = ({ roomCode, players }) => {
+      setIsLoading(false);
       onRoomJoined(roomCode, players);
     };
 
     const handleRoomJoinedEvent = ({ roomCode, players }) => {
+      setIsLoading(false);
       onRoomJoined(roomCode, players);
     };
 
     const handleError = (msg) => {
-      alert(msg);
+      setIsLoading(false);
+      setNotification({ message: msg, type: 'error' });
     };
 
     socket.on('room_created', handleRoomCreated);
@@ -44,27 +50,33 @@ const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
   }, [onRoomJoined]);
 
   const handleCreateRoom = () => {
+    setNotification(null);
+    setIsLoading(true);
     socket.connect();
     socket.emit('create_room', { username, userId });
   };
 
   const handleJoinRoom = () => {
-    if (!roomCode) return alert('Enter a room code');
+    if (!roomCode) return setNotification({ message: 'Enter a valid frequency code', type: 'error' });
+    setNotification(null);
+    setIsLoading(true);
     socket.connect();
     socket.emit('join_room', { roomCode, username, userId });
   };
 
   const handleUpdateUsername = async () => {
-    if (!newUsername.trim()) return alert("Username cannot be empty");
+    if (!newUsername.trim()) return setNotification({ message: "Username cannot be empty", type: 'error' });
     setIsUpdating(true);
+    setNotification(null);
     const { error } = await supabase.auth.updateUser({
       data: { username: newUsername.trim() }
     });
     
     if (error) {
-      alert(error.message);
+      setNotification({ message: error.message, type: 'error' });
     } else {
       setIsEditingUsername(false);
+      setNotification({ message: 'Identity updated successfully', type: 'success' });
     }
     setIsUpdating(false);
   };
@@ -72,7 +84,7 @@ const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
   const handleSignOut = async () => {
     if (window.confirm("Are you sure you want to exit the underground?")) {
       const { error } = await supabase.auth.signOut();
-      if (error) alert(error.message);
+      if (error) setNotification({ message: error.message, type: 'error' });
       else {
         localStorage.removeItem('mafia-room-code');
         localStorage.removeItem('mafia-user-id');
@@ -83,6 +95,15 @@ const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
 
   return (
     <div className="container-fluid min-vh-100 d-flex align-items-center justify-content-center" style={{ background: 'var(--bg-primary)' }}>
+      <AnimatePresence>
+        {notification && (
+          <Notification 
+            message={notification.message} 
+            type={notification.type} 
+            onClose={() => setNotification(null)} 
+          />
+        )}
+      </AnimatePresence>
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -145,16 +166,23 @@ const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
           <div className="row g-4">
             <div className="col-12">
               <motion.button 
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
+                whileHover={{ scale: isLoading ? 1 : 1.02 }}
+                whileTap={{ scale: isLoading ? 1 : 0.98 }}
                 className="btn btn-gold btn-lg w-100 py-4 shadow-lg d-flex align-items-center justify-content-center rounded-4" 
                 onClick={handleCreateRoom}
-                style={{ border: '2px solid var(--accent-gold)' }}
+                disabled={isLoading}
+                style={{ border: '2px solid var(--accent-gold)', cursor: isLoading ? 'not-allowed' : 'pointer' }}
               >
-                <PlusCircle size={30} className="me-4" />
+                {isLoading ? (
+                  <span className="spinner-border text-gold me-4" style={{ width: '2rem', height: '2rem', borderRightColor: 'transparent' }}></span>
+                ) : (
+                  <PlusCircle size={30} className="me-4" />
+                )}
                 <div className="text-start">
-                  <div className="fw-bold h5 mb-0">ESTABLISH OPERATION</div>
-                  <div className="small opacity-75" style={{ textTransform: 'none', letterSpacing: '0' }}>Begin a new game as the mastermind</div>
+                  <div className="fw-bold h5 mb-0">{isLoading ? "ESTABLISHING..." : "ESTABLISH OPERATION"}</div>
+                  <div className="small opacity-75" style={{ textTransform: 'none', letterSpacing: '0' }}>
+                    {isLoading ? "Intercepting secure frequency..." : "Begin a new game as the mastermind"}
+                  </div>
                 </div>
               </motion.button>
             </div>
@@ -171,17 +199,19 @@ const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
                     className="form-control border-2 text-center"
                     placeholder="ENTER CODE"
                     value={roomCode}
+                    disabled={isLoading}
                     style={{ 
                       textTransform: 'uppercase', 
                       letterSpacing: '4px', 
                       background: '#000', 
                       fontWeight: 'bold',
-                      fontSize: '1.5rem'
+                      fontSize: '1.5rem',
+                      opacity: isLoading ? 0.5 : 1
                     }}
                     onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
                   />
-                  <button className="btn btn-gold px-5 fw-bold" onClick={handleJoinRoom}>
-                    <People className="me-2" /> JOIN
+                  <button className="btn btn-gold px-5 fw-bold" onClick={handleJoinRoom} disabled={isLoading || !roomCode}>
+                    {isLoading ? <span className="spinner-border spinner-border-sm"></span> : <><People className="me-2" /> JOIN</>}
                   </button>
                 </div>
               </div>

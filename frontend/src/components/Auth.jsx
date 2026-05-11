@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { supabase } from '../supabaseClient';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Google, Envelope, Lock, Person, ShieldLock } from 'react-bootstrap-icons';
+import Notification from './Notification';
 
 const Auth = () => {
   const [loading, setLoading] = useState(false);
@@ -9,10 +10,12 @@ const Auth = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
+  const [notification, setNotification] = useState(null);
 
   const handleAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setNotification(null);
 
     if (isSignUp) {
       const { data, error } = await supabase.auth.signUp({ 
@@ -24,26 +27,40 @@ const Auth = () => {
       });
 
       if (error) {
-        alert(error.message);
+        setNotification({ message: error.message, type: 'error' });
       } else {
-        alert('Sign up successful! You can now log in.');
+        setNotification({ message: 'Sign up successful! Access the room via login.', type: 'success' });
       }
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) alert(error.message);
+      if (error) setNotification({ message: error.message, type: 'error' });
     }
     setLoading(false);
   };
 
   const handleGoogleLogin = async () => {
+    setLoading(true);
+    setNotification(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
     });
-    if (error) alert(error.message);
+    if (error) {
+      setNotification({ message: error.message, type: 'error' });
+      setLoading(false);
+    }
   };
 
   return (
     <div className="container-fluid min-vh-100 d-flex align-items-center justify-content-center" style={{ background: 'var(--bg-primary)' }}>
+      <AnimatePresence>
+        {notification && (
+          <Notification 
+            message={notification.message} 
+            type={notification.type} 
+            onClose={() => setNotification(null)} 
+          />
+        )}
+      </AnimatePresence>
       <motion.div 
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
