@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { StarFill, PlayFill, BoxArrowLeft, WifiOff, Clipboard, ClipboardCheck, PersonPlus, XLg, Sliders } from 'react-bootstrap-icons';
 import Avatar from './Avatar';
 import TopBar from './TopBar';
+import { useConfirm } from '../useConfirm';
 
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 10;
@@ -53,6 +54,7 @@ const Segmented = ({ id, label, hint, options, value, onChange, disabled }) => (
 const Lobby = ({ roomCode, initialPlayers, settings: roomSettings, userId }) => {
   const [players, setPlayers] = useState(initialPlayers);
   const [copied, setCopied] = useState(false);
+  const [confirmDialog, confirm] = useConfirm();
   const settings = { ...DEFAULT_SETTINGS, ...roomSettings };
 
   useEffect(() => {
@@ -98,14 +100,22 @@ const Lobby = ({ roomCode, initialPlayers, settings: roomSettings, userId }) => 
 
   const updateSetting = (key) => (value) => socket.emit('update_settings', { roomCode, settings: { [key]: value } });
 
-  const handleKick = (player) => {
-    if (window.confirm(`Remove ${player.username} from the room? They won't be able to rejoin it.`)) {
+  const handleKick = async (player) => {
+    const ok = await confirm({
+      title: `Remove ${player.username}?`,
+      message: "They'll be sent back to the Command Center and won't be able to rejoin this room.",
+      confirmLabel: 'Remove player',
+      tone: 'danger',
+      Icon: XLg
+    });
+    if (ok) {
       socket.emit('kick_player', { roomCode, targetUserId: player.userId });
     }
   };
 
   return (
     <div className="min-vh-100 d-flex flex-column" style={{ background: 'var(--bg-primary)' }}>
+      {confirmDialog}
       <TopBar>
         <span className="small text-nowrap px-3 py-2 rounded-pill" style={{ border: '1px solid rgba(200, 169, 107, 0.25)', color: 'var(--text-secondary)', letterSpacing: '1px' }}>
           ROOM <span className="gold-text fw-bold ms-1" style={{ letterSpacing: '3px' }}>{roomCode}</span>

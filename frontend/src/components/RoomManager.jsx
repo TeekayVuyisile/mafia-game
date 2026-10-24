@@ -12,6 +12,7 @@ import {
 } from 'react-bootstrap-icons';
 import Notification from './Notification';
 import Avatar from './Avatar';
+import { useConfirm } from '../useConfirm';
 import TopBar from './TopBar';
 
 const muted = { color: 'var(--text-secondary)' };
@@ -21,6 +22,7 @@ const RoomManager = ({ username, user, onRoomJoined, onOpenSettings, reconnectEr
   const [isLoading, setIsLoading] = useState(false);
   const [notification, setNotification] = useState(null);
   const [stats, setStats] = useState(null);
+  const [confirmDialog, confirm] = useConfirm();
 
   useEffect(() => {
     fetch('/api/me/stats', { credentials: 'same-origin' })
@@ -80,7 +82,14 @@ const RoomManager = ({ username, user, onRoomJoined, onOpenSettings, reconnectEr
   };
 
   const handleSignOut = async () => {
-    if (window.confirm("Are you sure you want to exit the underground?")) {
+    const ok = await confirm({
+      title: 'Sign out?',
+      message: "You'll leave the underground and need to sign in again before your next game.",
+      confirmLabel: 'Sign out',
+      tone: 'danger',
+      Icon: BoxArrowRight
+    });
+    if (ok) {
       const { error } = await authClient.signOut();
       if (error) setNotification({ message: error.message, type: 'error' });
       else {
@@ -94,6 +103,7 @@ const RoomManager = ({ username, user, onRoomJoined, onOpenSettings, reconnectEr
 
   return (
     <div className="min-vh-100 d-flex flex-column" style={{ background: 'var(--bg-primary)' }}>
+      {confirmDialog}
       <AnimatePresence>
         {notification && (
           <Notification

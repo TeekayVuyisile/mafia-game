@@ -3,6 +3,7 @@ import { socket } from '../socket';
 import { useNarrator } from '../useNarrator';
 import Avatar from './Avatar';
 import ChatPanel from './ChatPanel';
+import { useConfirm } from '../useConfirm';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldPlus,
@@ -92,6 +93,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
   // Other Mafia players' userIds; only ever non-empty when we are Mafia
   const [teammates, setTeammates] = useState(snapshot.teammates || []);
 
+  const [confirmDialog, confirm] = useConfirm();
   const narrator = useNarrator();
   const { speak } = narrator;
 
@@ -235,12 +237,44 @@ const Game = ({ roomCode, userId, snapshot }) => {
     }
   };
 
-  const handleLeaveRoom = () => {
-    if (window.confirm("Are you sure you want to leave the game?")) {
+  const handleLeaveRoom = async () => {
+    const midGame = gameState !== 'GameOver';
+    const ok = await confirm({
+      title: midGame ? 'Leave the game?' : 'Leave the room?',
+      message: midGame
+        ? "You'll be removed from this game and can't rejoin it. Your team plays on without you."
+        : "You'll head back to the Command Center. The others can start another round without you.",
+      confirmLabel: midGame ? 'Leave game' : 'Leave room',
+      tone: midGame ? 'danger' : 'default',
+      Icon: BoxArrowLeft
+    });
+    if (ok) {
       socket.emit('leave_room_explicitly', { roomCode, userId });
       localStorage.removeItem('mafia-room-code');
       window.location.reload();
     }
+  };
+
+  const handleEndSession = async () => {
+    const ok = await confirm({
+      title: 'End the session?',
+      message: 'This closes the room for everyone and sends all players back to the Command Center.',
+      confirmLabel: 'End session',
+      tone: 'danger'
+    });
+    if (ok) socket.emit('end_game_permanently', { roomCode });
+  };
+
+  // Mid-game only: abandons the round in progress (no XP is awarded)
+  const handleBackToLobby = async () => {
+    const ok = await confirm({
+      title: 'Abandon this game?',
+      message: 'Everyone returns to the lobby and this round ends without a winner. No XP is awarded.',
+      confirmLabel: 'Back to lobby',
+      tone: 'danger',
+      Icon: ArrowRepeat
+    });
+    if (ok) socket.emit('restart_game', { roomCode });
   };
 
   // Resolves to the server ack so ChatPanel can keep the text on failure
@@ -318,6 +352,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
     return (
       <div className="min-vh-100 d-flex flex-column" style={{ background: 'var(--bg-primary)' }}>
         {topBar}
+        {confirmDialog}
         <main className="flex-grow-1 py-5">
           <motion.div
             initial={{ opacity: 0, y: 12 }}
@@ -384,7 +419,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
                 <button className="btn btn-gold btn-lg flex-grow-1 py-3 rounded-3" onClick={() => socket.emit('restart_game', { roomCode })}>
                   <ArrowRepeat className="me-2" /> Play again
                 </button>
-                <button className="btn btn-lg flex-grow-1 py-3 rounded-3" style={{ border: '1px solid var(--role-mafia)', color: '#ff8a80', background: 'transparent' }} onClick={() => socket.emit('end_game_permanently', { roomCode })}>
+                <button className="btn btn-lg flex-grow-1 py-3 rounded-3" style={{ border: '1px solid var(--role-mafia)', color: '#ff8a80', background: 'transparent' }} onClick={handleEndSession}>
                   <XCircleFill className="me-2" /> END SESSION
                 </button>
               </div>
@@ -444,6 +479,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
   return (
     <div className="min-vh-100 d-flex flex-column" style={{ background: 'var(--bg-primary)' }}>
       {topBar}
+      {confirmDialog}
       <main className="flex-grow-1 py-4">
         <div className="container px-3" style={{ maxWidth: '72rem' }}>
           {banners}
@@ -799,10 +835,10 @@ const Game = ({ roomCode, userId, snapshot }) => {
                 <section className="card glass-panel rounded-4 p-4" aria-labelledby="host-heading">
                   <h2 id="host-heading" className="h6 fw-bold gold-text mb-3" style={cardTitle}>HOST CONTROLS</h2>
                   <div className="d-flex flex-column gap-2">
-                    <button className="btn btn-gold rounded-3 py-2" onClick={() => socket.emit('restart_game', { roomCode })}>
+                    <button className="btn btn-gold rounded-3 py-2" onClick={handleBackToLobby}>
                       <ArrowRepeat className="me-2" /> Back to lobby
                     </button>
-                    <button className="btn rounded-3 py-2" style={{ border: '1px solid var(--role-mafia)', color: '#ff8a80', background: 'transparent' }} onClick={() => socket.emit('end_game_permanently', { roomCode })}>
+                    <button className="btn rounded-3 py-2" style={{ border: '1px solid var(--role-mafia)', color: '#ff8a80', background: 'transparent' }} onClick={handleEndSession}>
                       <ExclamationTriangleFill className="me-2" /> END SESSION
                     </button>
                   </div>
