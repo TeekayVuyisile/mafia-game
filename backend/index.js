@@ -132,6 +132,12 @@ function getPlayerTarget(room, player) {
   return null;
 }
 
+// Fellow Mafia (userIds) for a Mafia player; empty for everyone else so roles never leak
+function getMafiaTeammates(room, player) {
+  if (player.role !== 'Mafia') return [];
+  return room.players.filter(p => p.role === 'Mafia' && p.userId !== player.userId).map(p => p.userId);
+}
+
 // Everything a client needs to rebuild its view after a reload or dropped connection
 function buildSyncPayload(roomCode, room, player) {
   return {
@@ -140,6 +146,7 @@ function buildSyncPayload(roomCode, room, player) {
     gameState: room.gameState,
     subPhase: room.subPhase,
     role: player.role,
+    teammates: getMafiaTeammates(room, player),
     message: room.currentMessage,
     timer: getRemainingSeconds(room),
     chat: room.chat,
@@ -287,6 +294,7 @@ io.on('connection', (socket) => {
         io.to(player.id).emit('game_started', {
           gameState: 'RoleAssignment',
           role: player.role,
+          teammates: getMafiaTeammates(room, player),
           message: room.currentMessage,
           timer: 10,
           players: getSanitizedPlayers(room.players)
@@ -367,11 +375,21 @@ io.on('connection', (socket) => {
   socket.on('submit_mafia_action', ({ roomCode, targetUserId }) => {
     const room = rooms[roomCode];
     const player = room?.players.find(p => p.id === socket.id);
+    const target = room?.players.find(p => p.userId === targetUserId);
     if (room && player?.role === 'Mafia' && player.isAlive && room.subPhase === 'MafiaTurn'
-        && targetUserId !== player.userId && isAliveTarget(room, targetUserId)) {
+        && target?.isAlive && target.role !== 'Mafia') {
       updateLastActivity(roomCode);
       room.nightActions.kill = targetUserId;
       socket.emit('action_confirmed', { message: 'Mafia choice recorded. Close your eyes.' });
+      // The team shares one kill: show the latest pick to the other Mafia so they can coordinate
+      for (const mate of room.players) {
+        if (mate.role === 'Mafia' && mate.userId !== player.userId && !mate.disconnected) {
+          io.to(mate.id).emit('mafia_target', {
+            targetUserId,
+            message: `${player.username} marked ${target.username}. Pick someone else to change the target.`
+          });
+        }
+      }
     }
   });
 

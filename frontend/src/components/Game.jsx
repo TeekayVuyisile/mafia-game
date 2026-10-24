@@ -74,6 +74,8 @@ const Game = ({ roomCode, userId, snapshot }) => {
   const [selectedTarget, setSelectedTarget] = useState(snapshot.myTarget ?? null);
   const [connected, setConnected] = useState(socket.connected);
   const [progress, setProgress] = useState(null);
+  // Other Mafia players' userIds; only ever non-empty when we are Mafia
+  const [teammates, setTeammates] = useState(snapshot.teammates || []);
   const chatBoxRef = useRef(null);
   const stickToBottom = useRef(true);
 
@@ -103,6 +105,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
       setVoteTally(data.voteTally || {});
       setWinnerData(data.result || null);
       setSelectedTarget(data.myTarget ?? null);
+      setTeammates(data.teammates || []);
       startPhaseClock(data.timer);
       speak(data.result ? gameOverNarration(data.result) : data.message);
     };
@@ -131,6 +134,11 @@ const Game = ({ roomCode, userId, snapshot }) => {
       speak(gameOverNarration(data));
     };
     const handleProgress = (data) => setProgress(data);
+    // A fellow Mafia changed the shared target
+    const handleMafiaTarget = ({ targetUserId, message }) => {
+      setSelectedTarget(targetUserId);
+      setMessage(message);
+    };
     const handleConnect = () => setConnected(true);
     const handleDisconnect = () => setConnected(false);
 
@@ -143,6 +151,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
     socket.on('player_left', handlePlayersUpdate);
     socket.on('game_over', handleGameOver);
     socket.on('progress_update', handleProgress);
+    socket.on('mafia_target', handleMafiaTarget);
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
 
@@ -156,6 +165,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
       socket.off('player_left', handlePlayersUpdate);
       socket.off('game_over', handleGameOver);
       socket.off('progress_update', handleProgress);
+      socket.off('mafia_target', handleMafiaTarget);
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
     };
@@ -376,9 +386,16 @@ const Game = ({ roomCode, userId, snapshot }) => {
   const timeRunningOut = timer !== null && timer <= Math.ceil((phase.duration || 40) / 4);
   const canActAtNight = gameState === 'Night' && isAlive && ((role === 'Mafia' && subPhase === 'MafiaTurn') || (role === 'Medic' && subPhase === 'MedicTurn'));
   const canVote = gameState === 'Voting' && isAlive;
+  const isTeammate = (playerId) => teammates.includes(playerId);
+  const teamPlayers = players.filter(p => isTeammate(p.userId));
   const targets = canActAtNight
-    ? players.filter(p => p.isAlive && (role === 'Medic' || p.userId !== userId))
+    ? players.filter(p => p.isAlive && (role === 'Medic' || (p.userId !== userId && !isTeammate(p.userId))))
     : players.filter(p => p.isAlive && p.userId !== userId);
+  const mafiaTag = (
+    <span className="badge rounded-pill ms-2" style={{ background: 'var(--role-mafia)', color: '#fff', fontSize: '0.62rem', letterSpacing: '1px' }}>
+      MAFIA
+    </span>
+  );
 
   return (
     <div className="min-vh-100 d-flex flex-column" style={{ background: 'var(--bg-primary)' }}>
@@ -457,6 +474,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
                               <Avatar image={player.avatar} name={player.username} size={36} />
                               <span className="flex-grow-1 fw-semibold text-truncate">
                                 {player.username}{player.userId === userId && <span className="gold-text small ms-2">(you)</span>}
+                                {isTeammate(player.userId) && mafiaTag}
                               </span>
                               {canVote && (
                                 <span className="badge rounded-pill" style={{ border: '1px solid rgba(200, 169, 107, 0.5)', color: 'var(--accent-gold)' }} title="Votes">
@@ -585,6 +603,25 @@ const Game = ({ roomCode, userId, snapshot }) => {
                   </div>
                 </div>
                 {role && <p className="small mb-0 mt-3" style={muted}>{ROLE_INFO[role]}</p>}
+                {role === 'Mafia' && (
+                  <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(139, 0, 0, 0.4)' }}>
+                    <span className="small d-block mb-2" style={{ ...muted, letterSpacing: '2px' }}>YOUR FAMILY</span>
+                    {teamPlayers.length === 0 ? (
+                      <p className="small mb-0" style={muted}>You work alone. Trust no one.</p>
+                    ) : (
+                      <ul className="list-unstyled mb-0 d-flex flex-column gap-2">
+                        {teamPlayers.map(mate => (
+                          <li key={mate.userId} className="d-flex align-items-center gap-2" style={{ opacity: mate.isAlive ? 1 : 0.5 }}>
+                            <Avatar image={mate.avatar} name={mate.username} size={28} />
+                            <span className="small text-truncate" style={{ color: 'var(--text-primary)' }}>{mate.username}</span>
+                            {!mate.isAlive && <span className="small" style={{ color: '#ff8a80' }}>· eliminated</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="small mb-0 mt-2" style={muted}>Only you can see this. You share one kill each night.</p>
+                  </div>
+                )}
               </section>
 
               {/* Players */}
@@ -602,6 +639,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
                       <span className={`flex-grow-1 text-truncate ${player.isAlive ? '' : 'text-decoration-line-through'}`} style={{ color: player.isAlive ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
                         {player.username}
                         {player.userId === userId && <span className="gold-text small ms-2">(you)</span>}
+                        {isTeammate(player.userId) && mafiaTag}
                       </span>
                       {gameState === 'Voting' && player.isAlive && voteTally[player.userId] > 0 && (
                         <span className="badge rounded-pill" style={{ border: '1px solid rgba(200, 169, 107, 0.5)', color: 'var(--accent-gold)' }} title="Votes">
