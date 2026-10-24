@@ -6,6 +6,7 @@ import { Server } from 'socket.io';
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node';
 import { auth, googleEnabled } from './auth.js';
 import { getStats, getLeaderboard, getPlayerProfile, recordGameResults, xpForResult } from './stats.js';
+import { serializeRoom, deserializeRoom, saveRoom, deleteSavedRoom, loadSavedRooms } from './roomStore.js';
 
 dotenv.config();
 
@@ -29,6 +30,11 @@ const HOST_HANDOFF_MS = 20 * 1000;
 // Grace period after the last ballot is cast, so a final vote change can still land
 const VOTE_CLOSE_DELAY_MS = 3000;
 const SKIP_VOTE = 'skip';
+// Persistence: how often changed rooms are written to Neon, how long restored players get to
+// reconnect before the interrupted phase ends, and how old a save can be and still be restored
+const PERSIST_INTERVAL_MS = 2000;
+const RESUME_GRACE_MS = 20 * 1000;
+const SAVED_ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 // Host-adjustable options; anything else sent by a client is ignored
 const DISCUSSION_TIMES = [30, 60, 90, 120, 180];
@@ -105,6 +111,19 @@ function destroyRoom(roomCode) {
   cancelRoomCleanup(room);
   cancelHostHandoff(room);
   delete rooms[roomCode];
+  savedSnapshots.delete(roomCode);
+  deleteSavedRoom(roomCode).catch(err => console.error(`Failed to delete saved room ${roomCode}:`, err.message));
+}
+
+// Deletes a room that stays completely empty past the grace period
+function scheduleEmptyRoomCleanup(roomCode, room) {
+  cancelRoomCleanup(room);
+  room.cleanupTimerId = setTimeout(() => {
+    if (rooms[roomCode] === room && room.players.every(p => p.disconnected)) {
+      console.log(`Room ${roomCode} cleaning up: all players gone.`);
+      destroyRoom(roomCode);
+    }
+  }, EMPTY_ROOM_GRACE_MS);
 }
 
 function transferHost(roomCode, room, newHost) {
@@ -228,6 +247,7 @@ function buildSyncPayload(roomCode, room, player) {
     detectiveInPlay: room.detectiveInPlay,
     myTarget: getPlayerTarget(room, player),
     settings: room.settings,
+    progress: room.gameState === 'GameOver' ? room.progress?.[player.userId] ?? null : null,
     result: room.gameState === 'GameOver' ? room.result : null
   };
 }
@@ -245,6 +265,7 @@ function resetGameState(room) {
   room.night = 0;
   room.detectiveInPlay = false;
   room.result = null;
+  room.progress = {};
   room.votesClosing = false;
   room.lastVoteResult = null;
 }
@@ -274,10 +295,198 @@ async function loadProfile(userId) {
   }
 }
 
+// ---------- Game flow ----------
+// Module-level (not per-connection) so timers can be re-armed for rooms restored after a restart
+
+function broadcastPhase(roomCode, gameState, message, timer, subPhase = null, extra = {}) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  room.gameState = gameState;
+  room.subPhase = subPhase;
+  room.currentMessage = message;
+  room.phaseEndsAt = Date.now() + timer * 1000;
+  room.lastActivity = Date.now();
+
+  persistSoon();
+  io.to(roomCode).emit('phase_change', {
+    gameState,
+    subPhase,
+    message,
+    timer,
+    players: getSanitizedPlayers(room.players),
+    ...extra
+  });
+}
+
+function startNightPhase(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  clearRoomTimers(room);
+  room.nightActions = { kill: null, save: null };
+  room.night += 1;
+  broadcastPhase(roomCode, 'Night', 'Night falls. Everyone close your eyes. Mafia, open your eyes and pick a target.', 15, 'MafiaTurn');
+  room.phaseTimerId = setTimeout(() => startMedicTurn(roomCode), 15000);
+}
+
+function startMedicTurn(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  clearRoomTimers(room);
+  broadcastPhase(roomCode, 'Night', 'Mafia, close your eyes. Medic, open your eyes and pick someone to save.', 15, 'MedicTurn');
+  // The Detective's turn runs even after they die, so its absence never gives that away
+  const next = room.detectiveInPlay ? startDetectiveTurn : startDiscussionPhase;
+  room.phaseTimerId = setTimeout(() => next(roomCode), 15000);
+}
+
+function startDetectiveTurn(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  clearRoomTimers(room);
+  broadcastPhase(roomCode, 'Night', 'Medic, close your eyes. Detective, open your eyes and choose someone to investigate.', 15, 'DetectiveTurn');
+  room.phaseTimerId = setTimeout(() => startDiscussionPhase(roomCode), 15000);
+}
+
+function startDiscussionPhase(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  clearRoomTimers(room);
+
+  let death = 'A quiet night... no one died.';
+  if (room.nightActions.kill && room.nightActions.kill !== room.nightActions.save) {
+    const player = room.players.find(p => p.userId === room.nightActions.kill);
+    if (player) death = `${player.username} was found dead this morning.${eliminate(room, player)}`;
+  }
+
+  const msg = `${room.detectiveInPlay ? 'Detective' : 'Medic'}, close your eyes. Everyone, open your eyes! ${death}`;
+  // Check before broadcasting so the death announcement is narrated as part of game over
+  // instead of being cut off by it
+  if (checkWinConditions(roomCode, msg)) return;
+
+  const seconds = room.settings.discussionTime;
+  broadcastPhase(roomCode, 'Discussion', msg, seconds);
+  room.phaseTimerId = setTimeout(() => startVotingPhase(roomCode), seconds * 1000);
+}
+
+function startVotingPhase(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  clearRoomTimers(room);
+  room.votes = {};
+  room.votesClosing = false;
+  const seconds = room.settings.votingTime;
+  broadcastPhase(roomCode, 'Voting', 'Time to vote! Who is the Mafia?', seconds);
+  room.phaseTimerId = setTimeout(() => processVotes(roomCode), seconds * 1000);
+}
+
+// Once every connected living player has voted, close the ballot shortly instead of waiting out the timer
+function maybeCloseVoting(roomCode, room) {
+  if (room.gameState !== 'Voting' || room.votesClosing) return;
+  const voters = room.players.filter(p => p.isAlive && !p.disconnected);
+  if (voters.length === 0 || !voters.every(p => room.votes[p.userId])) return;
+  room.votesClosing = true;
+  clearRoomTimers(room);
+  room.phaseEndsAt = Date.now() + VOTE_CLOSE_DELAY_MS;
+  room.currentMessage = 'Everyone has voted. Closing the ballot...';
+  io.to(roomCode).emit('phase_timer', { timer: VOTE_CLOSE_DELAY_MS / 1000, message: room.currentMessage });
+  room.phaseTimerId = setTimeout(() => processVotes(roomCode), VOTE_CLOSE_DELAY_MS);
+}
+
+function processVotes(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  clearRoomTimers(room);
+
+  const voteState = getVoteState(room);
+  const tally = voteState.tally;
+  const maxVotes = Math.max(0, ...Object.values(tally));
+  const leaders = Object.keys(tally).filter(id => tally[id] === maxVotes);
+
+  // A skip win or any tie (including a tie with skip) spares everyone
+  let message;
+  if (maxVotes === 0) message = 'No one voted. No one was eliminated.';
+  else if (leaders.length > 1) message = 'The town was divided. No one was eliminated.';
+  else if (leaders[0] === SKIP_VOTE) message = 'The town chose to skip. No one was eliminated.';
+  else {
+    const player = room.players.find(p => p.userId === leaders[0]);
+    message = player
+      ? `${player.username} was lynched by the town.${eliminate(room, player)}`
+      : 'The accused has already fled. No one was eliminated.';
+  }
+  room.lastVoteResult = voteState;
+
+  if (checkWinConditions(roomCode, message)) return;
+
+  broadcastPhase(roomCode, 'NightResult', message, 5, null, { voteResult: voteState });
+  room.phaseTimerId = setTimeout(() => startNightPhase(roomCode), 5000);
+}
+
+// lastEvent: the announcement that triggered the win (a death or lynching), so players still hear it
+function checkWinConditions(roomCode, lastEvent = null) {
+  const room = rooms[roomCode];
+  const aliveMafia = room.players.filter(p => p.role === 'Mafia' && p.isAlive).length;
+  const aliveOthers = room.players.filter(p => p.role !== 'Mafia' && p.isAlive).length;
+
+  if (aliveMafia === 0) {
+    endGame(roomCode, 'Civilians', 'All Mafia members have been eliminated!', lastEvent);
+    return true;
+  } else if (aliveMafia >= aliveOthers) {
+    endGame(roomCode, 'Mafia', 'Mafia has outmatched the civilians!', lastEvent);
+    return true;
+  }
+  return false;
+}
+
+function endGame(roomCode, winner, reason, lastEvent) {
+  const room = rooms[roomCode];
+  clearRoomTimers(room);
+  room.gameState = 'GameOver';
+  room.subPhase = null;
+  room.phaseEndsAt = null;
+  room.currentMessage = `${winner} Victory: ${reason}`;
+
+  // On Game Over, we reveal ALL roles
+  const revealedPlayers = getSanitizedPlayers(room.players).map((p, i) => ({ ...p, role: room.players[i].role }));
+  room.result = { winner, reason, lastEvent, players: revealedPlayers };
+
+  persistSoon();
+  io.to(roomCode).emit('game_over', room.result);
+  recordProgress(roomCode, room, winner);
+}
+
+async function recordProgress(roomCode, room, winner) {
+  const results = room.players
+    .filter(p => p.role)
+    .map(p => ({
+      userId: p.userId,
+      role: p.role,
+      won: winner === 'Mafia' ? p.role === 'Mafia' : p.role !== 'Mafia',
+      survived: p.isAlive
+    }));
+  try {
+    await recordGameResults(results);
+    for (const result of results) {
+      const player = room.players.find(p => p.userId === result.userId);
+      if (!player) continue;
+      const stats = await getStats(result.userId);
+      player.level = stats.level;
+      const progress = { xpGained: xpForResult(result), won: result.won, stats };
+      // Kept on the room so a reload (or restart) on the game-over screen still shows it
+      room.progress = { ...room.progress, [result.userId]: progress };
+      io.to(player.id).emit('progress_update', progress);
+    }
+    if (rooms[roomCode] === room) io.to(roomCode).emit('player_joined', { players: getSanitizedPlayers(room.players) });
+  } catch (err) {
+    console.error('Failed to record game results:', err);
+  }
+}
+
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   const userId = socket.data.userId;
   const isRoomHost = (room) => room?.host === userId;
+  // Save after any player action (vote, chat, pick...). setImmediate lets the handler mutate the
+  // room first; concurrent saves coalesce and unchanged rooms are skipped, so this stays cheap.
+  socket.onAny(() => setImmediate(persistSoon));
 
   function restorePlayer(roomCode, room, player, profile) {
     if (profile) Object.assign(player, { username: profile.name, avatar: profile.image, level: profile.level });
@@ -425,98 +634,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  function broadcastPhase(roomCode, gameState, message, timer, subPhase = null, extra = {}) {
-    const room = rooms[roomCode];
-    if (!room) return;
-    room.gameState = gameState;
-    room.subPhase = subPhase;
-    room.currentMessage = message;
-    room.phaseEndsAt = Date.now() + timer * 1000;
-    room.lastActivity = Date.now();
-
-    io.to(roomCode).emit('phase_change', {
-      gameState,
-      subPhase,
-      message,
-      timer,
-      players: getSanitizedPlayers(room.players),
-      ...extra
-    });
-  }
-
-  function startNightPhase(roomCode) {
-    const room = rooms[roomCode];
-    if (!room) return;
-    clearRoomTimers(room);
-    room.nightActions = { kill: null, save: null };
-    room.night += 1;
-    broadcastPhase(roomCode, 'Night', 'Night falls. Everyone close your eyes. Mafia, open your eyes and pick a target.', 15, 'MafiaTurn');
-    room.phaseTimerId = setTimeout(() => startMedicTurn(roomCode), 15000);
-  }
-
-  function startMedicTurn(roomCode) {
-    const room = rooms[roomCode];
-    if (!room) return;
-    clearRoomTimers(room);
-    broadcastPhase(roomCode, 'Night', 'Mafia, close your eyes. Medic, open your eyes and pick someone to save.', 15, 'MedicTurn');
-    // The Detective's turn runs even after they die, so its absence never gives that away
-    const next = room.detectiveInPlay ? startDetectiveTurn : startDiscussionPhase;
-    room.phaseTimerId = setTimeout(() => next(roomCode), 15000);
-  }
-
-  function startDetectiveTurn(roomCode) {
-    const room = rooms[roomCode];
-    if (!room) return;
-    clearRoomTimers(room);
-    broadcastPhase(roomCode, 'Night', 'Medic, close your eyes. Detective, open your eyes and choose someone to investigate.', 15, 'DetectiveTurn');
-    room.phaseTimerId = setTimeout(() => startDiscussionPhase(roomCode), 15000);
-  }
-
-  function startDiscussionPhase(roomCode) {
-    const room = rooms[roomCode];
-    if (!room) return;
-    clearRoomTimers(room);
-
-    let death = 'A quiet night... no one died.';
-    if (room.nightActions.kill && room.nightActions.kill !== room.nightActions.save) {
-      const player = room.players.find(p => p.userId === room.nightActions.kill);
-      if (player) death = `${player.username} was found dead this morning.${eliminate(room, player)}`;
-    }
-
-    const msg = `${room.detectiveInPlay ? 'Detective' : 'Medic'}, close your eyes. Everyone, open your eyes! ${death}`;
-    // Check before broadcasting so the death announcement is narrated as part of game over
-    // instead of being cut off by it
-    if (checkWinConditions(roomCode, msg)) return;
-
-    const seconds = room.settings.discussionTime;
-    broadcastPhase(roomCode, 'Discussion', msg, seconds);
-    room.phaseTimerId = setTimeout(() => startVotingPhase(roomCode), seconds * 1000);
-  }
-
-  function startVotingPhase(roomCode) {
-    const room = rooms[roomCode];
-    if (!room) return;
-    clearRoomTimers(room);
-    room.votes = {};
-    room.votesClosing = false;
-    const seconds = room.settings.votingTime;
-    broadcastPhase(roomCode, 'Voting', 'Time to vote! Who is the Mafia?', seconds);
-    room.phaseTimerId = setTimeout(() => processVotes(roomCode), seconds * 1000);
-  }
-
-  // Once every connected living player has voted, close the ballot shortly instead of waiting out the timer
-  function maybeCloseVoting(roomCode, room) {
-    if (room.gameState !== 'Voting' || room.votesClosing) return;
-    const voters = room.players.filter(p => p.isAlive && !p.disconnected);
-    if (voters.length === 0 || !voters.every(p => room.votes[p.userId])) return;
-    room.votesClosing = true;
-    clearRoomTimers(room);
-    room.phaseEndsAt = Date.now() + VOTE_CLOSE_DELAY_MS;
-    room.currentMessage = 'Everyone has voted. Closing the ballot...';
-    io.to(roomCode).emit('phase_timer', { timer: VOTE_CLOSE_DELAY_MS / 1000, message: room.currentMessage });
-    room.phaseTimerId = setTimeout(() => processVotes(roomCode), VOTE_CLOSE_DELAY_MS);
-  }
-
   socket.on('submit_mafia_action', ({ roomCode, targetUserId }) => {
     const room = rooms[roomCode];
     const player = room?.players.find(p => p.id === socket.id);
@@ -629,91 +746,6 @@ io.on('connection', (socket) => {
     reply({ ok: true, id: chatMessage.id });
   });
 
-  function processVotes(roomCode) {
-    const room = rooms[roomCode];
-    if (!room) return;
-    clearRoomTimers(room);
-
-    const voteState = getVoteState(room);
-    const tally = voteState.tally;
-    const maxVotes = Math.max(0, ...Object.values(tally));
-    const leaders = Object.keys(tally).filter(id => tally[id] === maxVotes);
-
-    // A skip win or any tie (including a tie with skip) spares everyone
-    let message;
-    if (maxVotes === 0) message = 'No one voted. No one was eliminated.';
-    else if (leaders.length > 1) message = 'The town was divided. No one was eliminated.';
-    else if (leaders[0] === SKIP_VOTE) message = 'The town chose to skip. No one was eliminated.';
-    else {
-      const player = room.players.find(p => p.userId === leaders[0]);
-      message = player
-        ? `${player.username} was lynched by the town.${eliminate(room, player)}`
-        : 'The accused has already fled. No one was eliminated.';
-    }
-    room.lastVoteResult = voteState;
-
-    if (checkWinConditions(roomCode, message)) return;
-
-    broadcastPhase(roomCode, 'NightResult', message, 5, null, { voteResult: voteState });
-    room.phaseTimerId = setTimeout(() => startNightPhase(roomCode), 5000);
-  }
-
-  // lastEvent: the announcement that triggered the win (a death or lynching), so players still hear it
-  function checkWinConditions(roomCode, lastEvent = null) {
-    const room = rooms[roomCode];
-    const aliveMafia = room.players.filter(p => p.role === 'Mafia' && p.isAlive).length;
-    const aliveOthers = room.players.filter(p => p.role !== 'Mafia' && p.isAlive).length;
-
-    if (aliveMafia === 0) {
-      endGame(roomCode, 'Civilians', 'All Mafia members have been eliminated!', lastEvent);
-      return true;
-    } else if (aliveMafia >= aliveOthers) {
-      endGame(roomCode, 'Mafia', 'Mafia has outmatched the civilians!', lastEvent);
-      return true;
-    }
-    return false;
-  }
-
-  function endGame(roomCode, winner, reason, lastEvent) {
-    const room = rooms[roomCode];
-    clearRoomTimers(room);
-    room.gameState = 'GameOver';
-    room.subPhase = null;
-    room.phaseEndsAt = null;
-    room.currentMessage = `${winner} Victory: ${reason}`;
-
-    // On Game Over, we reveal ALL roles
-    const revealedPlayers = getSanitizedPlayers(room.players).map((p, i) => ({ ...p, role: room.players[i].role }));
-    room.result = { winner, reason, lastEvent, players: revealedPlayers };
-
-    io.to(roomCode).emit('game_over', room.result);
-    recordProgress(roomCode, room, winner);
-  }
-
-  async function recordProgress(roomCode, room, winner) {
-    const results = room.players
-      .filter(p => p.role)
-      .map(p => ({
-        userId: p.userId,
-        role: p.role,
-        won: winner === 'Mafia' ? p.role === 'Mafia' : p.role !== 'Mafia',
-        survived: p.isAlive
-      }));
-    try {
-      await recordGameResults(results);
-      for (const result of results) {
-        const player = room.players.find(p => p.userId === result.userId);
-        if (!player) continue;
-        const stats = await getStats(result.userId);
-        player.level = stats.level;
-        io.to(player.id).emit('progress_update', { xpGained: xpForResult(result), won: result.won, stats });
-      }
-      if (rooms[roomCode] === room) io.to(roomCode).emit('player_joined', { players: getSanitizedPlayers(room.players) });
-    } catch (err) {
-      console.error('Failed to record game results:', err);
-    }
-  }
-
   socket.on('restart_game', ({ roomCode }) => {
     const room = rooms[roomCode];
     if (room && isRoomHost(room)) {
@@ -784,15 +816,7 @@ io.on('connection', (socket) => {
         // A voter dropping out shouldn't hold the ballot open
         maybeCloseVoting(roomCode, room);
 
-        if (room.players.every(p => p.disconnected)) {
-            cancelRoomCleanup(room);
-            room.cleanupTimerId = setTimeout(() => {
-              if (rooms[roomCode] === room && room.players.every(p => p.disconnected)) {
-                console.log(`Room ${roomCode} cleaning up: all players gone.`);
-                destroyRoom(roomCode);
-              }
-            }, EMPTY_ROOM_GRACE_MS);
-        }
+        if (room.players.every(p => p.disconnected)) scheduleEmptyRoomCleanup(roomCode, room);
         break;
       }
     }
@@ -800,6 +824,97 @@ io.on('connection', (socket) => {
 });
 
 app.get('/', (req, res) => res.send('Mafia Game Backend is running'));
+
+// ---------- Persistence ----------
+const savedSnapshots = new Map(); // roomCode -> last JSON written, so unchanged rooms are skipped
+let persisting = false;
+let persistQueued = false;
+
+async function persistRooms() {
+  // A save requested mid-save runs again right after, so a phase change is never skipped
+  if (persisting) {
+    persistQueued = true;
+    return;
+  }
+  persisting = true;
+  persistQueued = false;
+  try {
+    for (const [code, room] of Object.entries(rooms)) {
+      const json = serializeRoom(room);
+      if (savedSnapshots.get(code) === json) continue;
+      try {
+        await saveRoom(code, json);
+        if (rooms[code] === room) savedSnapshots.set(code, json);
+      } catch (err) {
+        console.error(`Failed to save room ${code}:`, err.message);
+      }
+    }
+  } finally {
+    persisting = false;
+  }
+  if (persistQueued) await persistRooms();
+}
+
+// Phase changes and game over are the moments worth saving straight away, not on the next tick
+function persistSoon() {
+  persistRooms().catch(err => console.error('Room save failed:', err.message));
+}
+
+// Which step an interrupted phase was heading to when the server went down
+function nextStepFor(room) {
+  switch (room.gameState) {
+    case 'RoleAssignment': return startNightPhase;
+    case 'Night':
+      if (room.subPhase === 'MafiaTurn') return startMedicTurn;
+      if (room.subPhase === 'MedicTurn') return room.detectiveInPlay ? startDetectiveTurn : startDiscussionPhase;
+      return startDiscussionPhase;
+    case 'Discussion': return startVotingPhase;
+    case 'Voting': return processVotes;
+    case 'NightResult': return startNightPhase;
+    default: return null;
+  }
+}
+
+async function restoreRooms() {
+  const saved = await loadSavedRooms(SAVED_ROOM_MAX_AGE_MS);
+  let restored = 0;
+  for (const { code, state } of saved) {
+    const room = deserializeRoom(state);
+    if (!room) continue;
+    // Every socket died with the old process; players reattach through reconnect_user
+    room.players.forEach(p => { p.disconnected = true; p.id = null; });
+    room.lastActivity = Date.now();
+    rooms[code] = room;
+
+    const next = nextStepFor(room);
+    if (next) {
+      const remaining = Math.max((room.phaseEndsAt || 0) - Date.now(), RESUME_GRACE_MS);
+      room.phaseEndsAt = Date.now() + remaining;
+      room.phaseTimerId = setTimeout(() => next(code), remaining);
+    }
+    scheduleEmptyRoomCleanup(code, room);
+    restored++;
+  }
+  if (restored) console.log(`Restored ${restored} room(s) from the database`);
+}
+
+try {
+  await restoreRooms();
+} catch (err) {
+  // Start anyway: a missing table (migration not run) shouldn't take the whole game down
+  console.error('Could not restore saved rooms:', err.message);
+}
+const persistInterval = setInterval(persistRooms, PERSIST_INTERVAL_MS);
+
+// Render sends SIGTERM before replacing the instance on deploy: save everything first
+async function shutdown(signal) {
+  console.log(`${signal} received, saving rooms before exit`);
+  clearInterval(persistInterval);
+  await persistRooms();
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // Cleanup interval: Check for inactive rooms every 10 minutes
 setInterval(() => {

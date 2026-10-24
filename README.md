@@ -18,6 +18,7 @@ A cinematic, realtime multiplayer Mafia party game built with the PERN stack (Po
 - **Smarter Voting:** Skip votes, and the ballot closes as soon as everyone has voted.
 - **Ranks & Progress:** Every finished game earns XP; levels unlock mafia ranks from Street Rat to Don, with a leaderboard of the top players.
 - **Your Dossier:** Pick an avatar, change your codename, track your stats, or permanently delete your account.
+- **Restart-Proof Games:** Game state is saved to Postgres, so a server restart or deploy only causes a brief reconnect instead of ending the game.
 - **Garbage Collection:** Automated backend cleanup to ensure server stability by pruning inactive rooms.
 
 ## 🛠️ Tech Stack
@@ -52,7 +53,7 @@ cd mafia-game
    GOOGLE_CLIENT_ID=        # optional
    GOOGLE_CLIENT_SECRET=    # optional
    ```
-4. Create the auth and `player_stats` tables in Neon: `npm run migrate` (safe to re-run)
+4. Create the auth, `player_stats` and `game_rooms` tables in Neon: `npm run migrate` (safe to re-run)
 5. Start the server: `npm run dev` (auto-restart) or `npm start`
 
 ### 3. Frontend Setup

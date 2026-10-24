@@ -3,6 +3,7 @@
 import { getMigrations } from 'better-auth/db/migration';
 import { authOptions, pool } from './auth.js';
 import { STATS_TABLE_SQL } from './stats.js';
+import { ROOMS_TABLE_SQL } from './roomStore.js';
 
 try {
   const { toBeCreated, toBeAdded, runMigrations } = await getMigrations(authOptions);
@@ -19,6 +20,10 @@ try {
   // Game progression lives in our own table next to Better Auth's
   await pool.query(STATS_TABLE_SQL);
   console.log('player_stats table ready.');
+
+  // Saved game state, so rooms survive restarts and deploys
+  await pool.query(ROOMS_TABLE_SQL);
+  console.log('game_rooms table ready.');
 } catch (err) {
   console.error('Migration failed:', err.message);
   process.exitCode = 1;

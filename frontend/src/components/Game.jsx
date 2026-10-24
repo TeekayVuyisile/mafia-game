@@ -87,7 +87,8 @@ const Game = ({ roomCode, userId, snapshot }) => {
   const [winnerData, setWinnerData] = useState(snapshot.result || null);
   const [selectedTarget, setSelectedTarget] = useState(snapshot.myTarget ?? null);
   const [connected, setConnected] = useState(socket.connected);
-  const [progress, setProgress] = useState(null);
+  // XP earned this game; also restored by the server after a reload on the game-over screen
+  const [progress, setProgress] = useState(snapshot.progress || null);
   // Other Mafia players' userIds; only ever non-empty when we are Mafia
   const [teammates, setTeammates] = useState(snapshot.teammates || []);
 
@@ -121,6 +122,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
       setVoteResult(data.voteResult || null);
       setSettings(data.settings || null);
       setWinnerData(data.result || null);
+      setProgress(data.progress || null);
       setSelectedTarget(data.myTarget ?? null);
       setTeammates(data.teammates || []);
       startPhaseClock(data.timer, Math.max(data.timer ?? 0, phaseDuration(data.gameState, data.settings)));
