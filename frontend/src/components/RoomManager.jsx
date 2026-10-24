@@ -12,6 +12,7 @@ import {
 } from 'react-bootstrap-icons';
 import Notification from './Notification';
 import Avatar from './Avatar';
+import TopBar from './TopBar';
 
 const muted = { color: 'var(--text-secondary)' };
 
@@ -103,40 +104,32 @@ const RoomManager = ({ username, user, onRoomJoined, onOpenSettings, reconnectEr
         )}
       </AnimatePresence>
 
-      <header style={{ borderBottom: '1px solid rgba(200, 169, 107, 0.15)' }}>
-        <div className="container d-flex align-items-center justify-content-between gap-3 py-3 px-3" style={{ maxWidth: '72rem' }}>
-          <span className="gold-text text-nowrap d-none d-sm-inline" style={{ fontFamily: 'var(--font-title)', letterSpacing: '4px', fontWeight: 700 }}>
-            MAFIA
+      <TopBar>
+        <button type="button" className="profile-chip" onClick={onOpenSettings} aria-label="Open your dossier">
+          <Avatar image={user.image} name={username} size={40} />
+          <span className="d-flex flex-column" style={{ minWidth: 0 }}>
+            <span className="fw-semibold text-truncate" style={{ maxWidth: '12rem', color: 'var(--text-primary)' }}>{username}</span>
+            {stats ? (
+              <>
+                <span className="small text-nowrap gold-text" style={{ fontSize: '0.72rem', letterSpacing: '1px' }}>
+                  LV {stats.level} · {stats.rank.toUpperCase()}
+                </span>
+                <span className="d-block mt-1 rounded-pill overflow-hidden" style={{ height: '3px', width: '100%', background: 'rgba(255,255,255,0.08)' }} aria-hidden="true">
+                  <span className="d-block h-100" style={{ width: `${levelProgress}%`, background: 'var(--accent-gold)' }} />
+                </span>
+              </>
+            ) : (
+              <span className="small" style={{ ...muted, fontSize: '0.72rem' }}>Loading rank…</span>
+            )}
           </span>
-
-          <div className="d-flex align-items-center gap-2 ms-auto" style={{ minWidth: 0 }}>
-            <button type="button" className="profile-chip" onClick={onOpenSettings} aria-label="Open your dossier">
-              <Avatar image={user.image} name={username} size={40} />
-              <span className="d-flex flex-column" style={{ minWidth: 0 }}>
-                <span className="fw-semibold text-truncate" style={{ maxWidth: '12rem', color: 'var(--text-primary)' }}>{username}</span>
-                {stats ? (
-                  <>
-                    <span className="small text-nowrap gold-text" style={{ fontSize: '0.72rem', letterSpacing: '1px' }}>
-                      LV {stats.level} · {stats.rank.toUpperCase()}
-                    </span>
-                    <span className="d-block mt-1 rounded-pill overflow-hidden" style={{ height: '3px', width: '100%', background: 'rgba(255,255,255,0.08)' }} aria-hidden="true">
-                      <span className="d-block h-100" style={{ width: `${levelProgress}%`, background: 'var(--accent-gold)' }} />
-                    </span>
-                  </>
-                ) : (
-                  <span className="small" style={{ ...muted, fontSize: '0.72rem' }}>Loading rank…</span>
-                )}
-              </span>
-            </button>
-            <button type="button" className="icon-btn" onClick={onOpenSettings} aria-label="Settings" title="Settings">
-              <GearFill size={18} />
-            </button>
-            <button type="button" className="icon-btn icon-btn-danger" onClick={handleSignOut} aria-label="Sign out" title="Sign out">
-              <BoxArrowRight size={18} />
-            </button>
-          </div>
-        </div>
-      </header>
+        </button>
+        <button type="button" className="icon-btn" onClick={onOpenSettings} aria-label="Settings" title="Settings">
+          <GearFill size={18} />
+        </button>
+        <button type="button" className="icon-btn icon-btn-danger" onClick={handleSignOut} aria-label="Sign out" title="Sign out">
+          <BoxArrowRight size={18} />
+        </button>
+      </TopBar>
 
       <main className="flex-grow-1 d-flex align-items-center py-5">
         <motion.div
