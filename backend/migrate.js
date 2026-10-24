@@ -2,6 +2,7 @@
 // Safe to re-run: only missing tables and columns are added.
 import { getMigrations } from 'better-auth/db/migration';
 import { authOptions, pool } from './auth.js';
+import { STATS_TABLE_SQL } from './stats.js';
 
 try {
   const { toBeCreated, toBeAdded, runMigrations } = await getMigrations(authOptions);
@@ -14,6 +15,10 @@ try {
     await runMigrations();
     console.log('Migration complete.');
   }
+
+  // Game progression lives in our own table next to Better Auth's
+  await pool.query(STATS_TABLE_SQL);
+  console.log('player_stats table ready.');
 } catch (err) {
   console.error('Migration failed:', err.message);
   process.exitCode = 1;

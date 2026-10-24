@@ -6,13 +6,13 @@ import Lobby from './components/Lobby';
 import Game from './components/Game';
 import LandingPage from './components/LandingPage';
 import Notification from './components/Notification';
+import Settings from './components/Settings';
 import { authClient } from './authClient';
 import { socket } from './socket';
 import { AnimatePresence } from 'framer-motion';
 
 function App() {
   const { data: session, isPending: sessionPending } = authClient.useSession();
-  const userId = session?.user?.id ?? null;
   const [showAuth, setShowAuth] = useState(false);
   const [roomData, setRoomData] = useState(null);
   const [gameStarted, setGameStarted] = useState(false);
@@ -21,18 +21,14 @@ function App() {
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState(null);
   const [notification, setNotification] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
   
   const reconnectTimeout = useRef(null);
   const roomCodeRef = useRef(null);
-  const userIdRef = useRef(null);
 
   useEffect(() => {
     roomCodeRef.current = roomData?.code ?? null;
   }, [roomData]);
-
-  useEffect(() => {
-    userIdRef.current = userId;
-  }, [userId]);
 
   useEffect(() => {
     // 1. All Listeners defined once
@@ -92,13 +88,25 @@ function App() {
     // Socket.io reconnects with a new socket id that the server doesn't know yet;
     // re-identify so we rejoin the room and receive a full state sync
     const onConnect = () => {
-        if (roomCodeRef.current && userIdRef.current) {
-            socket.emit('reconnect_user', { roomCode: roomCodeRef.current, userId: userIdRef.current });
+        if (roomCodeRef.current) {
+            socket.emit('reconnect_user', { roomCode: roomCodeRef.current });
         }
+    };
+
+    // Middleware rejections (e.g. expired session) aren't retried automatically by Socket.io
+    const onConnectError = (err) => {
+        if (socket.active) return;
+        console.log("DEBUG App: Socket rejected", err.message);
+        clearTimeout(reconnectTimeout.current);
+        setReconnecting(false);
+        setReconnectError(err.message === 'unauthorized'
+            ? 'Your session expired. Sign out and sign back in.'
+            : `Could not reach the server: ${err.message}`);
     };
 
     // 2. Attach Listeners
     socket.on('connect', onConnect);
+    socket.on('connect_error', onConnectError);
     socket.on('game_started', onGameStarted);
     socket.on('room_restarted', onRoomRestarted);
     socket.on('room_terminated', onRoomTerminated);
@@ -115,7 +123,7 @@ function App() {
               console.log("DEBUG App: Mount - Attempting Reconnect to", savedRoomCode);
               setReconnecting(true);
               socket.connect();
-              socket.emit('reconnect_user', { roomCode: savedRoomCode, userId: session.user.id });
+              socket.emit('reconnect_user', { roomCode: savedRoomCode });
               
               reconnectTimeout.current = setTimeout(() => {
                   setReconnectError("Reconnection timed out.");
@@ -128,6 +136,7 @@ function App() {
 
     return () => {
       socket.off('connect', onConnect);
+      socket.off('connect_error', onConnectError);
       socket.off('game_started', onGameStarted);
       socket.off('room_restarted', onRoomRestarted);
       socket.off('room_terminated', onRoomTerminated);
@@ -186,11 +195,14 @@ function App() {
           userId={session.user.id}
           snapshot={gameSnapshot || { gameState: 'RoleAssignment', players: roomData.players }}
         />
+      ) : !roomData && showSettings ? (
+        <Settings user={session.user} onClose={() => setShowSettings(false)} />
       ) : !roomData ? (
         <RoomManager 
             username={username} 
-            userId={session.user.id} 
+            user={session.user}
             onRoomJoined={handleRoomJoined} 
+            onOpenSettings={() => setShowSettings(true)}
             reconnectError={reconnectError}
         />
       ) : (

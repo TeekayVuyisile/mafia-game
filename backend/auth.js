@@ -1,4 +1,5 @@
 import { betterAuth } from 'better-auth';
+import { bearer } from 'better-auth/plugins';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 
@@ -27,6 +28,18 @@ export const authOptions = {
   baseURL,
   secret: process.env.BETTER_AUTH_SECRET,
   trustedOrigins: [baseURL, ...extraOrigins],
+  user: {
+    deleteUser: {
+      enabled: true,
+      // player_stats also cascades on the FK; this keeps deletion explicit
+      beforeDelete: async (user) => {
+        await pool.query('DELETE FROM player_stats WHERE user_id = $1', [user.id]);
+      }
+    }
+  },
+  // Lets the game socket (which connects straight to the backend, without the
+  // frontend-domain cookies) prove who it is with the session token
+  plugins: [bearer()],
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 6

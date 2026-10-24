@@ -3,8 +3,9 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { toNodeHandler } from 'better-auth/node';
+import { toNodeHandler, fromNodeHeaders } from 'better-auth/node';
 import { auth, googleEnabled } from './auth.js';
+import { getStats, getLeaderboard, getPlayerProfile, recordGameResults, xpForResult } from './stats.js';
 
 dotenv.config();
 
@@ -31,6 +32,26 @@ app.use(express.json());
 
 // Lets the login screen hide providers that aren't configured
 app.get('/api/config', (req, res) => res.json({ google: googleEnabled }));
+
+app.get('/api/me/stats', async (req, res) => {
+  try {
+    const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
+    if (!session) return res.status(401).json({ error: 'Not signed in' });
+    res.json(await getStats(session.user.id));
+  } catch (err) {
+    console.error('Stats lookup failed:', err);
+    res.status(500).json({ error: 'Could not load stats' });
+  }
+});
+
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+    res.json(await getLeaderboard(10));
+  } catch (err) {
+    console.error('Leaderboard lookup failed:', err);
+    res.status(500).json({ error: 'Could not load leaderboard' });
+  }
+});
 
 const rooms = {};
 
@@ -79,6 +100,8 @@ function getSanitizedPlayers(players) {
     id: p.id,
     userId: p.userId,
     username: p.username,
+    avatar: p.avatar ?? null,
+    level: p.level ?? 1,
     isHost: !!p.isHost,
     isAlive: !!p.isAlive,
     disconnected: !!p.disconnected
@@ -136,10 +159,37 @@ function resetGameState(room) {
   room.result = null;
 }
 
+// Every socket must carry a valid session token; identity comes from it, never from event payloads
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('unauthorized'));
+    const session = await auth.api.getSession({ headers: new Headers({ authorization: `Bearer ${token}` }) });
+    if (!session) return next(new Error('unauthorized'));
+    socket.data.userId = session.user.id;
+    next();
+  } catch (err) {
+    console.error('Socket auth failed:', err);
+    next(new Error('unauthorized'));
+  }
+});
+
+// Fresh name/avatar/level from the database, so profile edits show up in the next room
+async function loadProfile(userId) {
+  try {
+    return await getPlayerProfile(userId);
+  } catch (err) {
+    console.error('Profile lookup failed:', err);
+    return null;
+  }
+}
+
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
+  const userId = socket.data.userId;
 
-  function restorePlayer(roomCode, room, player) {
+  function restorePlayer(roomCode, room, player, profile) {
+    if (profile) Object.assign(player, { username: profile.name, avatar: profile.image, level: profile.level });
     updateLastActivity(roomCode);
     cancelRoomCleanup(room);
     player.id = socket.id;
@@ -149,11 +199,13 @@ io.on('connection', (socket) => {
     io.to(roomCode).emit('player_joined', { players: getSanitizedPlayers(room.players) });
   }
 
-  socket.on('create_room', ({ username, userId }) => {
+  socket.on('create_room', async () => {
+    const profile = await loadProfile(userId);
+    if (!profile) return socket.emit('error', 'Could not load your profile.');
     const roomCode = generateRoomCode();
     rooms[roomCode] = {
       host: userId,
-      players: [{ id: socket.id, userId, username, isHost: true, isAlive: true, disconnected: false }],
+      players: [{ id: socket.id, userId, username: profile.name, avatar: profile.image, level: profile.level, isHost: true, isAlive: true, disconnected: false }],
       settings: { minPlayers: 4, maxPlayers: 10 },
       gameState: 'Lobby',
       phaseTimerId: null,
@@ -164,22 +216,26 @@ io.on('connection', (socket) => {
     resetGameState(rooms[roomCode]);
     socket.join(roomCode);
     socket.emit('room_created', { roomCode, players: getSanitizedPlayers(rooms[roomCode].players) });
-    console.log(`Room ${roomCode} created by ${username}`);
+    console.log(`Room ${roomCode} created by ${profile.name}`);
   });
 
-  socket.on('join_room', ({ roomCode: rawCode, username, userId }) => {
+  socket.on('join_room', async ({ roomCode: rawCode } = {}) => {
     const roomCode = normalizeRoomCode(rawCode);
+    if (!rooms[roomCode]) return socket.emit('error', 'Room not found');
+
+    const profile = await loadProfile(userId);
     const room = rooms[roomCode];
     if (!room) return socket.emit('error', 'Room not found');
+    if (!profile) return socket.emit('error', 'Could not load your profile.');
 
     const existingPlayer = room.players.find(p => p.userId === userId);
-    if (existingPlayer) return restorePlayer(roomCode, room, existingPlayer);
+    if (existingPlayer) return restorePlayer(roomCode, room, existingPlayer, profile);
 
     if (room.gameState !== 'Lobby') return socket.emit('error', 'This game is already in progress.');
     if (room.players.length >= room.settings.maxPlayers) return socket.emit('error', 'This room is full.');
 
     updateLastActivity(roomCode);
-    const player = { id: socket.id, userId, username, isHost: false, isAlive: true, disconnected: false };
+    const player = { id: socket.id, userId, username: profile.name, avatar: profile.image, level: profile.level, isHost: false, isAlive: true, disconnected: false };
     room.players.push(player);
     socket.join(roomCode);
 
@@ -187,7 +243,7 @@ io.on('connection', (socket) => {
     socket.emit('room_joined', { roomCode, players: getSanitizedPlayers(room.players), settings: room.settings });
   });
 
-  socket.on('reconnect_user', ({ roomCode: rawCode, userId }) => {
+  socket.on('reconnect_user', ({ roomCode: rawCode } = {}) => {
     const roomCode = normalizeRoomCode(rawCode);
     const room = rooms[roomCode];
     if (!room) return socket.emit('error', 'Room no longer exists.');
@@ -437,6 +493,31 @@ io.on('connection', (socket) => {
     room.result = { winner, reason, lastEvent, players: revealedPlayers };
 
     io.to(roomCode).emit('game_over', room.result);
+    recordProgress(roomCode, room, winner);
+  }
+
+  async function recordProgress(roomCode, room, winner) {
+    const results = room.players
+      .filter(p => p.role)
+      .map(p => ({
+        userId: p.userId,
+        role: p.role,
+        won: winner === 'Mafia' ? p.role === 'Mafia' : p.role !== 'Mafia',
+        survived: p.isAlive
+      }));
+    try {
+      await recordGameResults(results);
+      for (const result of results) {
+        const player = room.players.find(p => p.userId === result.userId);
+        if (!player) continue;
+        const stats = await getStats(result.userId);
+        player.level = stats.level;
+        io.to(player.id).emit('progress_update', { xpGained: xpForResult(result), won: result.won, stats });
+      }
+      if (rooms[roomCode] === room) io.to(roomCode).emit('player_joined', { players: getSanitizedPlayers(room.players) });
+    } catch (err) {
+      console.error('Failed to record game results:', err);
+    }
   }
 
   socket.on('restart_game', ({ roomCode }) => {
@@ -450,7 +531,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('leave_room_explicitly', ({ roomCode, userId }) => {
+  socket.on('leave_room_explicitly', ({ roomCode } = {}) => {
       const room = rooms[roomCode];
       if (!room) return;
       const leaver = room.players.find(p => p.userId === userId);

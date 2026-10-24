@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { socket } from '../socket';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PersonFill, StarFill, PlayFill, DoorOpenFill, PeopleFill, WifiOff } from 'react-bootstrap-icons';
+import { StarFill, PlayFill, DoorOpenFill, PeopleFill, WifiOff } from 'react-bootstrap-icons';
+import Avatar from './Avatar';
 
 const Lobby = ({ roomCode, initialPlayers, userId }) => {
   const [players, setPlayers] = useState(initialPlayers);
@@ -58,14 +59,13 @@ const Lobby = ({ roomCode, initialPlayers, userId }) => {
                       className="list-group-item d-flex justify-content-between align-items-center py-3 px-0 bg-transparent"
                     >
                       <div className="d-flex align-items-center">
-                        <div 
-                          className={`p-2 rounded-circle me-4 d-flex align-items-center justify-content-center ${player.isHost ? 'gold-glow' : ''}`}
-                          style={{ 
-                            border: `1px solid ${player.isHost ? 'var(--accent-gold)' : 'var(--text-secondary)'}`,
-                            background: player.isHost ? 'var(--accent-gold)' : 'transparent'
-                          }}
-                        >
-                          {player.isHost ? <StarFill size={18} color="black" /> : <PersonFill size={18} className="text-secondary" />}
+                        <div className={`position-relative me-4 rounded-circle ${player.isHost ? 'gold-glow' : ''}`}>
+                          <Avatar image={player.avatar} name={player.username} size={44} />
+                          {player.isHost && (
+                            <span className="position-absolute d-flex align-items-center justify-content-center rounded-circle" style={{ bottom: -4, right: -4, width: 20, height: 20, background: 'var(--accent-gold)' }}>
+                              <StarFill size={11} color="black" />
+                            </span>
+                          )}
                         </div>
                         <div>
                           <span 
@@ -74,6 +74,7 @@ const Lobby = ({ roomCode, initialPlayers, userId }) => {
                           >
                             {player.username} {player.userId === userId && '(YOU)'}
                           </span>
+                          <small className="d-block" style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', letterSpacing: '1px' }}>LEVEL {player.level ?? 1}</small>
                           {player.disconnected && (
                             <small className="text-danger pulse-red d-block mt-1" style={{ fontSize: '0.7rem' }}>
                               <WifiOff size={10} className="me-1"/> SIGNAL WEAK / RECONNECTING...

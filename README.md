@@ -12,6 +12,8 @@ A cinematic, realtime multiplayer Mafia party game built with the PERN stack (Po
 - **Narrator (TTS):** A browser-based Text-to-Speech narrator that announces game phases and results.
 - **Identity Persistence:** Seamless reconnection support. If you lose your connection, the "Command Center" helps you intercept your previous frequency and jump back into the action.
 - **Account Management:** Authentication via Better Auth with accounts stored in Neon Postgres (Email/Password & optional Google), including customizable usernames.
+- **Ranks & Progress:** Every finished game earns XP; levels unlock mafia ranks from Street Rat to Don, with a leaderboard of the top players.
+- **Your Dossier:** Pick an avatar, change your codename, track your stats, or permanently delete your account.
 - **Garbage Collection:** Automated backend cleanup to ensure server stability by pruning inactive rooms.
 
 ## 🛠️ Tech Stack
@@ -46,7 +48,7 @@ cd mafia-game
    GOOGLE_CLIENT_ID=        # optional
    GOOGLE_CLIENT_SECRET=    # optional
    ```
-4. Create the auth tables in Neon: `npm run migrate` (safe to re-run)
+4. Create the auth and `player_stats` tables in Neon: `npm run migrate` (safe to re-run)
 5. Start the server: `npm run dev` (auto-restart) or `npm start`
 
 ### 3. Frontend Setup
@@ -71,7 +73,7 @@ Auth requests go to `/api/auth/*` on the frontend's own origin and are proxied t
 3. **Build Command:** `npm install`
 4. **Start Command:** `npm start`
 5. **Environment Variables:** `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (your Vercel URL, e.g. `https://mafia-game-opal.vercel.app`), and optionally `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
-6. **Google sign-in (optional):** in Google Cloud Console create an OAuth client with redirect URI `<BETTER_AUTH_URL>/api/auth/callback/google`.
+6. **Google sign-in (optional):** in Google Cloud Console create an OAuth client with redirect URIs `<BETTER_AUTH_URL>/api/auth/callback/google` (and `http://localhost:5173/api/auth/callback/google` for local dev). The consent screen must be published (not "Testing") for anyone to sign in; `frontend/public/privacy.html` and `terms.html` are the policy links it requires.
 
 ### Frontend (Vercel)
 1. **New Project:** Import your GitHub repo.

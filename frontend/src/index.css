@@ -65,6 +65,17 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Buttons */
 
+/* Bootstrap's .btn loads after this file and resets these variables on .btn itself,
+   so they need the extra specificity of .btn.btn-gold to stick */
+.btn.btn-gold {
+  --bs-btn-border-color: var(--accent-gold);
+  --bs-btn-hover-border-color: var(--accent-gold);
+  --bs-btn-active-border-color: var(--accent-gold);
+  --bs-btn-disabled-border-color: rgba(200, 169, 107, 0.4);
+  --bs-btn-hover-bg: var(--accent-gold);
+  --bs-btn-active-bg: var(--accent-gold);
+}
+
 .btn-gold {
   background-color: transparent;
   color: var(--accent-gold) !important;
@@ -78,7 +89,8 @@ h1, h2, h3, h4, h5, h6 {
 
 .btn-gold:hover {
   background-color: var(--accent-gold);
-  color: var(--bg-primary);
+  /* !important to beat the gold text forced on .btn-gold, or the label vanishes on hover */
+  color: var(--bg-primary) !important;
   box-shadow: 0 0 20px var(--accent-gold-glow);
 }
 
@@ -156,4 +168,77 @@ h1, h2, h3, h4, h5, h6 {
 .form-control:focus {
   border-color: var(--accent-gold) !important;
   box-shadow: 0 0 10px var(--accent-gold-glow) !important;
+}
+
+/* Icon-only buttons (settings, sign out): 44px touch target */
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid rgba(200, 169, 107, 0.25);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--accent-gold);
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.icon-btn:hover {
+  background: rgba(200, 169, 107, 0.12);
+  border-color: var(--accent-gold);
+}
+
+.icon-btn.icon-btn-danger:hover {
+  background: rgba(139, 0, 0, 0.2);
+  border-color: #b33a3a;
+  color: #ff8a80;
+}
+
+/* Profile chip in the Command Center header */
+.profile-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px 6px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(200, 169, 107, 0.2);
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+  min-width: 0;
+}
+
+.profile-chip:hover {
+  border-color: var(--accent-gold);
+  background: rgba(200, 169, 107, 0.08);
+}
+
+/* Lobby action cards */
+.action-card {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.action-card:hover {
+  border-color: rgba(200, 169, 107, 0.6);
+  box-shadow: 0 0 24px rgba(200, 169, 107, 0.08);
+}
+
+:is(.btn, .icon-btn, .profile-chip, .form-control):focus-visible {
+  outline: 2px solid var(--accent-gold);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+input.form-control::placeholder {
+  color: rgba(245, 245, 245, 0.45);
 }

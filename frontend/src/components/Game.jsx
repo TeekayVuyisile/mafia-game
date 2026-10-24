@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { socket } from '../socket';
 import { useNarrator } from '../useNarrator';
+import Avatar from './Avatar';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldPlus,
@@ -48,6 +49,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
   const [winnerData, setWinnerData] = useState(snapshot.result || null);
   const [selectedTarget, setSelectedTarget] = useState(snapshot.myTarget ?? null);
   const [connected, setConnected] = useState(socket.connected);
+  const [progress, setProgress] = useState(null);
   const chatBoxRef = useRef(null);
   const stickToBottom = useRef(true);
 
@@ -104,6 +106,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
       setPhaseEndsAt(null);
       speak(gameOverNarration(data));
     };
+    const handleProgress = (data) => setProgress(data);
     const handleConnect = () => setConnected(true);
     const handleDisconnect = () => setConnected(false);
 
@@ -115,6 +118,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
     socket.on('player_joined', handlePlayersUpdate);
     socket.on('player_left', handlePlayersUpdate);
     socket.on('game_over', handleGameOver);
+    socket.on('progress_update', handleProgress);
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
 
@@ -127,6 +131,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
       socket.off('player_joined', handlePlayersUpdate);
       socket.off('player_left', handlePlayersUpdate);
       socket.off('game_over', handleGameOver);
+      socket.off('progress_update', handleProgress);
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
     };
@@ -247,11 +252,27 @@ const Game = ({ roomCode, userId, snapshot }) => {
               <p className="text-center mb-2" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)' }}>{winnerData.lastEvent}</p>
             )}
             <h4 className="text-center mb-5" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)', textTransform: 'none' }}>{winnerData.reason}</h4>
+            {progress && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-panel gold-border rounded-4 p-4 mb-5">
+                <div className="d-flex justify-content-between align-items-center mb-2">
+                  <span className="fw-bold gold-text" style={{ letterSpacing: '2px' }}>
+                    {progress.won ? 'VICTORY' : 'DEFEAT'} · +{progress.xpGained} XP
+                  </span>
+                  <span className="small" style={{ color: 'var(--text-secondary)', letterSpacing: '1px' }}>
+                    LEVEL {progress.stats.level} · {progress.stats.rank.toUpperCase()}
+                  </span>
+                </div>
+                <div className="progress" style={{ height: '8px', background: 'rgba(255,255,255,0.06)' }}>
+                  <div className="progress-bar" style={{ width: `${Math.round((progress.stats.xpIntoLevel / progress.stats.xpPerLevel) * 100)}%`, background: 'var(--accent-gold)' }} />
+                </div>
+              </motion.div>
+            )}
             <div className="row g-4">
               {winnerData.players.map(p => (
                 <div key={p.userId} className="col-md-6">
                   <div className={`p-3 rounded-4 d-flex justify-content-between align-items-center ${p.isAlive ? 'glass-panel' : 'opacity-25'}`} style={{ border: `1px solid ${getRoleColor(p.role)}` }}>
                     <div className="d-flex align-items-center">
+                       <span className="me-3"><Avatar image={p.avatar} name={p.username} size={34} /></span>
                        <img src={getRoleIcon(p.role)} alt={p.role} style={{ width: '30px', marginRight: '15px' }} />
                        <span className="fw-bold" style={{ letterSpacing: '1px' }}>{p.username}</span>
                     </div>
@@ -516,12 +537,9 @@ const Game = ({ roomCode, userId, snapshot }) => {
                 {players.map(player => (
                   <div key={player.userId} className="list-group-item d-flex justify-content-between align-items-center p-4 bg-transparent border-0" style={{ borderBottom: '1px solid rgba(200, 169, 107, 0.05) !important' }}>
                     <div className="d-flex align-items-center">
-                      <div
-                        className="p-1 rounded-circle me-3"
-                        style={{ border: `2px solid ${player.isAlive ? 'var(--accent-gold)' : 'var(--text-secondary)'}` }}
-                      >
-                         <div className="p-1 rounded-circle" style={{ background: player.isAlive ? 'var(--accent-gold)' : 'transparent', width: '8px', height: '8px' }} />
-                      </div>
+                      <span className="me-3" style={{ opacity: player.isAlive ? 1 : 0.4, filter: player.isAlive ? 'none' : 'grayscale(1)' }}>
+                        <Avatar image={player.avatar} name={player.username} size={34} />
+                      </span>
                       <span className={`h6 mb-0 ${!player.isAlive ? 'text-decoration-line-through opacity-50' : 'fw-bold'}`} style={{ letterSpacing: '1px' }}>
                         {player.username} {player.userId === userId && <span className="gold-text ms-2">(YOU)</span>}
                       </span>
