@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { socket } from '../socket';
 import { motion, AnimatePresence } from 'framer-motion';
-import { StarFill, PlayFill, BoxArrowLeft, WifiOff, Clipboard, ClipboardCheck, PersonPlus } from 'react-bootstrap-icons';
+import { StarFill, PlayFill, BoxArrowLeft, WifiOff, Clipboard, ClipboardCheck, PersonPlus, XLg, Sliders } from 'react-bootstrap-icons';
 import Avatar from './Avatar';
 import TopBar from './TopBar';
 
@@ -9,9 +9,49 @@ const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 10;
 const muted = { color: 'var(--text-secondary)' };
 
-const Lobby = ({ roomCode, initialPlayers, userId }) => {
+// Mirrors the options the server accepts in `update_settings`
+const DISCUSSION_OPTIONS = [30, 60, 90, 120, 180].map(s => ({ value: s, label: s < 120 ? `${s}s` : `${s / 60}m` }));
+const VOTING_OPTIONS = [15, 30, 45, 60].map(s => ({ value: s, label: `${s}s` }));
+const VISIBILITY_OPTIONS = [{ value: 'anonymous', label: 'Anonymous' }, { value: 'public', label: 'Public' }];
+const REVEAL_OPTIONS = [{ value: false, label: 'Hidden' }, { value: true, label: 'Revealed' }];
+const DEFAULT_SETTINGS = { discussionTime: 60, votingTime: 30, voteVisibility: 'anonymous', revealRoleOnDeath: false };
+
+const Segmented = ({ id, label, hint, options, value, onChange, disabled }) => (
+  <div className="mb-3">
+    <div id={id} className="small fw-semibold mb-1" style={{ color: 'var(--text-primary)' }}>{label}</div>
+    {hint && <div className="small mb-2" style={{ ...muted, fontSize: '0.78rem' }}>{hint}</div>}
+    <div className="d-flex flex-wrap gap-1" role="radiogroup" aria-labelledby={id}>
+      {options.map(option => {
+        const selected = option.value === value;
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            disabled={disabled}
+            onClick={() => !selected && onChange(option.value)}
+            className="btn btn-sm rounded-pill px-3"
+            style={{
+              minHeight: 36,
+              border: `1px solid ${selected ? 'var(--accent-gold)' : 'rgba(200, 169, 107, 0.2)'}`,
+              background: selected ? 'rgba(200, 169, 107, 0.18)' : 'transparent',
+              color: selected ? 'var(--accent-gold)' : 'var(--text-secondary)',
+              opacity: 1
+            }}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+
+const Lobby = ({ roomCode, initialPlayers, settings: roomSettings, userId }) => {
   const [players, setPlayers] = useState(initialPlayers);
   const [copied, setCopied] = useState(false);
+  const settings = { ...DEFAULT_SETTINGS, ...roomSettings };
 
   useEffect(() => {
     const onPlayersUpdate = ({ players }) => setPlayers(players);
@@ -49,6 +89,14 @@ const Lobby = ({ roomCode, initialPlayers, userId }) => {
     }
   };
 
+  const updateSetting = (key) => (value) => socket.emit('update_settings', { roomCode, settings: { [key]: value } });
+
+  const handleKick = (player) => {
+    if (window.confirm(`Remove ${player.username} from the room? They won't be able to rejoin it.`)) {
+      socket.emit('kick_player', { roomCode, targetUserId: player.userId });
+    }
+  };
+
   return (
     <div className="min-vh-100 d-flex flex-column" style={{ background: 'var(--bg-primary)' }}>
       <TopBar>
@@ -79,8 +127,8 @@ const Lobby = ({ roomCode, initialPlayers, userId }) => {
 
           <div className="row g-4">
             {/* Players */}
-            <div className="col-lg-7">
-              <section className="card glass-panel h-100 p-4 rounded-4" aria-labelledby="players-heading">
+            <div className="col-lg-7 d-flex flex-column gap-4">
+              <section className="card glass-panel p-4 rounded-4" aria-labelledby="players-heading">
                 <div className="d-flex align-items-center justify-content-between mb-3">
                   <h2 id="players-heading" className="h6 fw-bold gold-text mb-0" style={{ letterSpacing: '3px' }}>PLAYERS</h2>
                   <span className="small" style={muted}>
@@ -125,6 +173,18 @@ const Lobby = ({ roomCode, initialPlayers, userId }) => {
                           <span className="badge rounded-pill" style={{ border: '1px solid rgba(200, 169, 107, 0.4)', color: 'var(--accent-gold)', fontWeight: 600 }}>
                             LV {player.level ?? 1}
                           </span>
+                          {isHost && !isMe && (
+                            <button
+                              type="button"
+                              className="icon-btn icon-btn-danger"
+                              style={{ width: 36, height: 36 }}
+                              onClick={() => handleKick(player)}
+                              aria-label={`Remove ${player.username}`}
+                              title="Remove player"
+                            >
+                              <XLg size={14} />
+                            </button>
+                          )}
                         </motion.li>
                       );
                     })}
@@ -143,10 +203,7 @@ const Lobby = ({ roomCode, initialPlayers, userId }) => {
                   ))}
                 </ul>
               </section>
-            </div>
 
-            {/* Invite + start */}
-            <div className="col-lg-5 d-flex flex-column gap-4">
               <section className="card glass-panel p-4 rounded-4" aria-labelledby="invite-heading">
                 <h2 id="invite-heading" className="h6 fw-bold gold-text mb-3" style={{ letterSpacing: '3px' }}>INVITE YOUR CREW</h2>
                 <p className="small mb-3" style={muted}>Share this frequency code. Friends enter it under “Join a game”.</p>
@@ -160,10 +217,57 @@ const Lobby = ({ roomCode, initialPlayers, userId }) => {
                 </div>
                 <span className="small d-block mt-2" role="status" style={{ ...muted, minHeight: '1.25rem' }}>{copied ? 'Copied to clipboard.' : ''}</span>
               </section>
+            </div>
 
+            {/* Settings + start */}
+            <div className="col-lg-5">
               <section className="card glass-panel p-4 rounded-4" aria-labelledby="setup-heading">
-                <h2 id="setup-heading" className="h6 fw-bold gold-text mb-3" style={{ letterSpacing: '3px' }}>THIS GAME</h2>
-                <ul className="list-unstyled small mb-4 d-flex flex-column gap-2" style={muted}>
+                <div className="d-flex align-items-center justify-content-between mb-1">
+                  <h2 id="setup-heading" className="h6 fw-bold gold-text mb-0 d-flex align-items-center" style={{ letterSpacing: '3px' }}>
+                    <Sliders className="me-2" /> GAME SETTINGS
+                  </h2>
+                </div>
+                <p className="small mb-3" style={muted}>
+                  {isHost ? 'Only you can change these. Everyone sees them update live.' : 'Set by the host.'}
+                </p>
+
+                <Segmented
+                  id="setting-discussion"
+                  label="Discussion time"
+                  options={DISCUSSION_OPTIONS}
+                  value={settings.discussionTime}
+                  onChange={updateSetting('discussionTime')}
+                  disabled={!isHost}
+                />
+                <Segmented
+                  id="setting-voting"
+                  label="Voting time"
+                  hint="Voting also ends once everyone has voted."
+                  options={VOTING_OPTIONS}
+                  value={settings.votingTime}
+                  onChange={updateSetting('votingTime')}
+                  disabled={!isHost}
+                />
+                <Segmented
+                  id="setting-visibility"
+                  label="Votes"
+                  hint={settings.voteVisibility === 'public' ? 'Everyone sees who voted for whom.' : 'Only vote totals are shown.'}
+                  options={VISIBILITY_OPTIONS}
+                  value={settings.voteVisibility}
+                  onChange={updateSetting('voteVisibility')}
+                  disabled={!isHost}
+                />
+                <Segmented
+                  id="setting-reveal"
+                  label="Role on death"
+                  hint={settings.revealRoleOnDeath ? "A player's role is announced when they die." : 'Roles stay secret until the game ends.'}
+                  options={REVEAL_OPTIONS}
+                  value={settings.revealRoleOnDeath}
+                  onChange={updateSetting('revealRoleOnDeath')}
+                  disabled={!isHost}
+                />
+
+                <ul className="list-unstyled small mb-4 mt-2 pt-3 d-flex flex-column gap-2" style={{ ...muted, borderTop: '1px solid rgba(200, 169, 107, 0.12)' }}>
                   <li className="d-flex justify-content-between"><span>Mafia</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>{mafiaCount}</span></li>
                   <li className="d-flex justify-content-between"><span>Medic</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>1</span></li>
                   <li className="d-flex justify-content-between"><span>Civilians</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>{Math.max(0, players.length - mafiaCount - 1)}</span></li>

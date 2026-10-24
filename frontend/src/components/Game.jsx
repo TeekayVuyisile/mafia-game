@@ -14,6 +14,7 @@ import {
   SendFill,
   PeopleFill,
   ExclamationTriangleFill,
+  ForwardFill,
   VolumeUpFill,
   VolumeMuteFill,
   WifiOff,
@@ -41,6 +42,15 @@ const PHASES = {
 };
 
 const SUB_PHASES = { MafiaTurn: "Mafia's turn", MedicTurn: "Medic's turn" };
+
+const SKIP_VOTE = 'skip';
+
+// Discussion and voting lengths are host settings; the rest are fixed on the server
+const phaseDuration = (gameState, settings) => {
+  if (gameState === 'Discussion') return settings?.discussionTime ?? PHASES.Discussion.duration;
+  if (gameState === 'Voting') return settings?.votingTime ?? PHASES.Voting.duration;
+  return PHASES[gameState]?.duration ?? 0;
+};
 
 const ROLE_INFO = {
   Mafia: 'Choose one player to eliminate each night. Blend in during the day.',
@@ -70,6 +80,12 @@ const Game = ({ roomCode, userId, snapshot }) => {
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState(null);
   const [voteTally, setVoteTally] = useState(snapshot.voteTally || {});
+  // voterId -> targetId, only populated when the host made votes public
+  const [publicVotes, setPublicVotes] = useState(snapshot.votes || null);
+  // Final ballot shown during the verdict phase
+  const [voteResult, setVoteResult] = useState(snapshot.voteResult || null);
+  const [settings, setSettings] = useState(snapshot.settings || null);
+  const [clockLength, setClockLength] = useState(() => phaseDuration(snapshot.gameState, snapshot.settings));
   const [winnerData, setWinnerData] = useState(snapshot.result || null);
   const [selectedTarget, setSelectedTarget] = useState(snapshot.myTarget ?? null);
   const [connected, setConnected] = useState(socket.connected);
@@ -89,9 +105,10 @@ const Game = ({ roomCode, userId, snapshot }) => {
   }, [speak]);
 
   useEffect(() => {
-    const startPhaseClock = (seconds) => {
+    const startPhaseClock = (seconds, length = seconds) => {
       setNow(Date.now());
       setPhaseEndsAt(toEndsAt(seconds));
+      setClockLength(length);
     };
 
     // Server re-sent the full state after our socket reconnected
@@ -103,14 +120,17 @@ const Game = ({ roomCode, userId, snapshot }) => {
       if (data.players) setPlayers(data.players);
       setChat(data.chat || []);
       setVoteTally(data.voteTally || {});
+      setPublicVotes(data.votes || null);
+      setVoteResult(data.voteResult || null);
+      setSettings(data.settings || null);
       setWinnerData(data.result || null);
       setSelectedTarget(data.myTarget ?? null);
       setTeammates(data.teammates || []);
-      startPhaseClock(data.timer);
+      startPhaseClock(data.timer, Math.max(data.timer ?? 0, phaseDuration(data.gameState, data.settings)));
       speak(data.result ? gameOverNarration(data.result) : data.message);
     };
 
-    const handlePhaseChange = ({ gameState, subPhase, message, timer, players }) => {
+    const handlePhaseChange = ({ gameState, subPhase, message, timer, players, voteResult }) => {
       setGameState(gameState);
       setSubPhase(subPhase ?? null);
       setMessage(message);
@@ -119,13 +139,25 @@ const Game = ({ roomCode, userId, snapshot }) => {
       setChatError(null);
       if (players) setPlayers(players);
       setVoteTally({});
+      setPublicVotes(null);
+      setVoteResult(voteResult || null);
+      speak(message);
+    };
+
+    // Everyone voted, so the server is closing the ballot early
+    const handlePhaseTimer = ({ timer, message }) => {
+      startPhaseClock(timer);
+      setMessage(message);
       speak(message);
     };
 
     const handleReceiveMessage = (msg) =>
       setChat(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
     const handleActionConfirmed = ({ message }) => setMessage(message);
-    const handleVoteUpdate = ({ tally }) => setVoteTally(tally);
+    const handleVoteUpdate = ({ tally, votes }) => {
+      setVoteTally(tally);
+      setPublicVotes(votes || null);
+    };
     const handlePlayersUpdate = ({ players }) => setPlayers(players);
     const handleGameOver = (data) => {
       setGameState('GameOver');
@@ -147,6 +179,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
     socket.on('receive_message', handleReceiveMessage);
     socket.on('action_confirmed', handleActionConfirmed);
     socket.on('vote_update', handleVoteUpdate);
+    socket.on('phase_timer', handlePhaseTimer);
     socket.on('player_joined', handlePlayersUpdate);
     socket.on('player_left', handlePlayersUpdate);
     socket.on('game_over', handleGameOver);
@@ -161,6 +194,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
       socket.off('receive_message', handleReceiveMessage);
       socket.off('action_confirmed', handleActionConfirmed);
       socket.off('vote_update', handleVoteUpdate);
+      socket.off('phase_timer', handlePhaseTimer);
       socket.off('player_joined', handlePlayersUpdate);
       socket.off('player_left', handlePlayersUpdate);
       socket.off('game_over', handleGameOver);
@@ -381,9 +415,24 @@ const Game = ({ roomCode, userId, snapshot }) => {
 
   const phase = PHASES[gameState] || { label: gameState, Icon: HourglassSplit, duration: 0 };
   const PhaseIcon = phase.Icon;
-  const timeShare = timer !== null && phase.duration ? Math.min(100, (timer / phase.duration) * 100) : 0;
+  const timeShare = timer !== null && clockLength ? Math.min(100, (timer / clockLength) * 100) : 0;
   // Warn in the last quarter of the phase rather than a fixed 10s (which is the whole of short phases)
-  const timeRunningOut = timer !== null && timer <= Math.ceil((phase.duration || 40) / 4);
+  const timeRunningOut = timer !== null && timer <= Math.ceil((clockLength || 40) / 4);
+  const playerById = (id) => players.find(p => p.userId === id);
+  const votersFor = (targetId) => (publicVotes
+    ? Object.entries(publicVotes).filter(([, target]) => target === targetId).map(([voter]) => playerById(voter)).filter(Boolean)
+    : []);
+
+  const voterStack = (voters) => voters.length > 0 && (
+    <span className="d-flex align-items-center" aria-label={`Voted by ${voters.map(v => v.username).join(', ')}`}>
+      {voters.slice(0, 5).map((voter, index) => (
+        <span key={voter.userId} title={voter.username} style={{ marginLeft: index ? -8 : 0, borderRadius: '50%', boxShadow: '0 0 0 2px var(--bg-secondary)' }}>
+          <Avatar image={voter.avatar} name={voter.username} size={22} />
+        </span>
+      ))}
+      {voters.length > 5 && <span className="small ms-1" style={muted}>+{voters.length - 5}</span>}
+    </span>
+  );
   const canActAtNight = gameState === 'Night' && isAlive && ((role === 'Mafia' && subPhase === 'MafiaTurn') || (role === 'Medic' && subPhase === 'MedicTurn'));
   const canVote = gameState === 'Voting' && isAlive;
   const isTeammate = (playerId) => teammates.includes(playerId);
@@ -453,7 +502,9 @@ const Game = ({ roomCode, userId, snapshot }) => {
                       {canVote ? 'CAST YOUR VOTE' : role === 'Mafia' ? 'CHOOSE YOUR TARGET' : 'CHOOSE WHO TO PROTECT'}
                     </h2>
                     <p className="small mb-3" style={muted}>
-                      {canVote ? 'You can change your vote until the timer runs out.' : 'Your pick is secret. You can change it until your turn ends.'}
+                      {canVote
+                        ? `You can change your vote until voting closes. ${settings?.voteVisibility === 'public' ? 'Votes are public: everyone sees who you pick.' : 'Votes are anonymous: only totals are shown.'}`
+                        : 'Your pick is secret. You can change it until your turn ends.'}
                     </p>
                     <div className="row g-2">
                       {targets.map(player => {
@@ -476,6 +527,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
                                 {player.username}{player.userId === userId && <span className="gold-text small ms-2">(you)</span>}
                                 {isTeammate(player.userId) && mafiaTag}
                               </span>
+                              {canVote && voterStack(votersFor(player.userId))}
                               {canVote && (
                                 <span className="badge rounded-pill" style={{ border: '1px solid rgba(200, 169, 107, 0.5)', color: 'var(--accent-gold)' }} title="Votes">
                                   {voteTally[player.userId] || 0}
@@ -488,7 +540,77 @@ const Game = ({ roomCode, userId, snapshot }) => {
                           </div>
                         );
                       })}
+                      {canVote && (
+                        <div className="col-12">
+                          <button
+                            type="button"
+                            className="btn w-100 p-3 d-flex align-items-center gap-3 text-start rounded-3"
+                            aria-pressed={selectedTarget === SKIP_VOTE}
+                            style={{
+                              border: `1px dashed ${selectedTarget === SKIP_VOTE ? 'var(--accent-gold)' : 'rgba(200, 169, 107, 0.25)'}`,
+                              background: selectedTarget === SKIP_VOTE ? 'rgba(200, 169, 107, 0.12)' : 'transparent',
+                              color: 'var(--text-primary)'
+                            }}
+                            onClick={() => handleAction(SKIP_VOTE)}
+                          >
+                            <span className="d-inline-flex align-items-center justify-content-center rounded-circle flex-shrink-0" style={{ width: 36, height: 36, border: '1px dashed rgba(200, 169, 107, 0.4)' }}>
+                              <ForwardFill size={16} className="gold-text" />
+                            </span>
+                            <span className="flex-grow-1">
+                              <span className="fw-semibold d-block">Skip vote</span>
+                              <span className="small" style={muted}>If skip wins or ties, no one is eliminated.</span>
+                            </span>
+                            {voterStack(votersFor(SKIP_VOTE))}
+                            <span className="badge rounded-pill" style={{ border: '1px solid rgba(200, 169, 107, 0.5)', color: 'var(--accent-gold)' }} title="Votes">
+                              {voteTally[SKIP_VOTE] || 0}
+                            </span>
+                            {selectedTarget === SKIP_VOTE
+                              ? <CheckCircleFill className="gold-text flex-shrink-0" size={20} />
+                              : <span className="flex-shrink-0 rounded-circle" style={{ width: 20, height: 20, border: '2px solid rgba(200, 169, 107, 0.3)' }} />}
+                          </button>
+                        </div>
+                      )}
                     </div>
+                  </motion.section>
+                ) : gameState === 'NightResult' && voteResult ? (
+                  <motion.section
+                    key="ballot"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="card glass-panel rounded-4 p-4"
+                    aria-labelledby="ballot-heading"
+                  >
+                    <h2 id="ballot-heading" className="h6 fw-bold gold-text mb-3" style={cardTitle}>BALLOT RESULTS</h2>
+                    {Object.keys(voteResult.tally).length === 0 ? (
+                      <p className="small mb-0" style={muted}>No votes were cast.</p>
+                    ) : (
+                      <ul className="list-unstyled mb-0 d-flex flex-column gap-2">
+                        {Object.entries(voteResult.tally).sort((a, b) => b[1] - a[1]).map(([targetId, count]) => {
+                          const target = targetId === SKIP_VOTE ? null : playerById(targetId);
+                          const voters = voteResult.votes
+                            ? Object.entries(voteResult.votes).filter(([, t]) => t === targetId).map(([v]) => playerById(v)).filter(Boolean)
+                            : [];
+                          return (
+                            <li key={targetId} className="d-flex align-items-center gap-3 p-2 rounded-3" style={{ border: '1px solid rgba(200, 169, 107, 0.12)' }}>
+                              {target
+                                ? <Avatar image={target.avatar} name={target.username} size={32} />
+                                : <span className="d-inline-flex align-items-center justify-content-center rounded-circle" style={{ width: 32, height: 32, border: '1px dashed rgba(200, 169, 107, 0.4)' }}><ForwardFill size={14} className="gold-text" /></span>}
+                              <span className="flex-grow-1 text-truncate" style={{ color: 'var(--text-primary)' }}>
+                                {target ? target.username : 'Skip'}
+                                {voters.length > 0 && (
+                                  <span className="d-block small text-truncate" style={muted}>by {voters.map(v => v.username).join(', ')}</span>
+                                )}
+                              </span>
+                              <span className="badge rounded-pill" style={{ border: '1px solid rgba(200, 169, 107, 0.5)', color: 'var(--accent-gold)' }}>
+                                {count} {count === 1 ? 'vote' : 'votes'}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    {!voteResult.votes && <p className="small mb-0 mt-3" style={muted}>Votes were anonymous.</p>}
                   </motion.section>
                 ) : gameState !== 'Discussion' && (
                   <motion.section
@@ -647,7 +769,9 @@ const Game = ({ roomCode, userId, snapshot }) => {
                         </span>
                       )}
                       <span className="small text-nowrap" style={{ color: !player.isAlive ? '#ff8a80' : player.disconnected ? 'var(--text-secondary)' : 'var(--accent-gold)', fontSize: '0.72rem', letterSpacing: '1px' }}>
-                        {!player.isAlive ? 'OUT' : player.disconnected ? 'OFFLINE' : 'ALIVE'}
+                        {!player.isAlive
+                          ? (player.revealedRole ? `OUT · ${player.revealedRole.toUpperCase()}` : 'OUT')
+                          : player.disconnected ? 'OFFLINE' : 'ALIVE'}
                       </span>
                     </li>
                   ))}

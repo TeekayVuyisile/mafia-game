@@ -30,14 +30,14 @@ const RoomManager = ({ username, user, onRoomJoined, onOpenSettings, reconnectEr
   }, []);
 
   useEffect(() => {
-    const handleRoomCreated = ({ roomCode, players }) => {
+    const handleRoomCreated = ({ roomCode, players, settings }) => {
       setIsLoading(false);
-      onRoomJoined(roomCode, players);
+      onRoomJoined(roomCode, players, settings);
     };
 
-    const handleRoomJoinedEvent = ({ roomCode, players }) => {
+    const handleRoomJoinedEvent = ({ roomCode, players, settings }) => {
       setIsLoading(false);
-      onRoomJoined(roomCode, players);
+      onRoomJoined(roomCode, players, settings);
     };
 
     const handleError = (msg) => {

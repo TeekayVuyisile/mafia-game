@@ -24,6 +24,24 @@ const CHAT_HISTORY_LIMIT = 200;
 const CHAT_COOLDOWN_MS = 400;
 // How long a room survives with every player disconnected (page refreshes, network blips)
 const EMPTY_ROOM_GRACE_MS = 2 * 60 * 1000;
+// How long a disconnected host keeps the role before it passes to a connected player
+const HOST_HANDOFF_MS = 20 * 1000;
+// Grace period after the last ballot is cast, so a final vote change can still land
+const VOTE_CLOSE_DELAY_MS = 3000;
+const SKIP_VOTE = 'skip';
+
+// Host-adjustable options; anything else sent by a client is ignored
+const DISCUSSION_TIMES = [30, 60, 90, 120, 180];
+const VOTING_TIMES = [15, 30, 45, 60];
+const VOTE_VISIBILITY = ['anonymous', 'public'];
+const DEFAULT_SETTINGS = {
+  minPlayers: 4,
+  maxPlayers: 10,
+  discussionTime: 60,
+  votingTime: 30,
+  voteVisibility: 'anonymous',
+  revealRoleOnDeath: false
+};
 
 app.use(cors());
 // Better Auth parses its own request bodies, so it must be mounted before express.json()
@@ -69,12 +87,45 @@ function cancelRoomCleanup(room) {
   }
 }
 
+function cancelHostHandoff(room) {
+  if (room.hostTimerId) {
+    clearTimeout(room.hostTimerId);
+    room.hostTimerId = null;
+  }
+}
+
 function destroyRoom(roomCode) {
   const room = rooms[roomCode];
   if (!room) return;
   clearRoomTimers(room);
   cancelRoomCleanup(room);
+  cancelHostHandoff(room);
   delete rooms[roomCode];
+}
+
+function transferHost(roomCode, room, newHost) {
+  cancelHostHandoff(room);
+  room.players.forEach(p => { p.isHost = false; });
+  newHost.isHost = true;
+  room.host = newHost.userId;
+  io.to(roomCode).emit('host_changed', { hostUserId: newHost.userId, message: `${newHost.username} is now the host.` });
+  io.to(roomCode).emit('player_joined', { players: getSanitizedPlayers(room.players) });
+}
+
+// Connected players first, so control never lands on someone who is also offline
+function pickNextHost(room) {
+  const others = room.players.filter(p => p.userId !== room.host);
+  return others.find(p => !p.disconnected) || others[0] || null;
+}
+
+const ROLE_ARTICLES = { Mafia: '', Medic: 'the ', Civilian: 'a ' };
+
+// Single place a player dies, so the optional role reveal applies to every kind of death
+function eliminate(room, player) {
+  player.isAlive = false;
+  if (!room.settings.revealRoleOnDeath) return '';
+  player.revealedRole = player.role;
+  return ` They were ${ROLE_ARTICLES[player.role] ?? ''}${player.role}.`;
 }
 
 function updateLastActivity(roomCode) {
@@ -104,7 +155,9 @@ function getSanitizedPlayers(players) {
     level: p.level ?? 1,
     isHost: !!p.isHost,
     isAlive: !!p.isAlive,
-    disconnected: !!p.disconnected
+    disconnected: !!p.disconnected,
+    // Only set when the host enabled "reveal role on death" and this player has died
+    revealedRole: p.revealedRole ?? null
   }));
 }
 
@@ -113,6 +166,14 @@ function tallyVotes(votes = {}) {
     acc[uid] = (acc[uid] || 0) + 1;
     return acc;
   }, {});
+}
+
+// Tally is always public; who-voted-for-whom only when the host chose public votes
+function getVoteState(room) {
+  return {
+    tally: tallyVotes(room.votes),
+    votes: room.settings.voteVisibility === 'public' ? { ...room.votes } : null
+  };
 }
 
 function getRemainingSeconds(room) {
@@ -151,7 +212,10 @@ function buildSyncPayload(roomCode, room, player) {
     timer: getRemainingSeconds(room),
     chat: room.chat,
     voteTally: room.gameState === 'Voting' ? tallyVotes(room.votes) : {},
+    votes: room.gameState === 'Voting' ? getVoteState(room).votes : null,
+    voteResult: room.gameState === 'NightResult' ? room.lastVoteResult : null,
     myTarget: getPlayerTarget(room, player),
+    settings: room.settings,
     result: room.gameState === 'GameOver' ? room.result : null
   };
 }
@@ -164,6 +228,8 @@ function resetGameState(room) {
   room.votes = {};
   room.chat = [];
   room.result = null;
+  room.votesClosing = false;
+  room.lastVoteResult = null;
 }
 
 // Every socket must carry a valid session token; identity comes from it, never from event payloads
@@ -194,6 +260,7 @@ async function loadProfile(userId) {
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   const userId = socket.data.userId;
+  const isRoomHost = (room) => room?.host === userId;
 
   function restorePlayer(roomCode, room, player, profile) {
     if (profile) Object.assign(player, { username: profile.name, avatar: profile.image, level: profile.level });
@@ -201,6 +268,7 @@ io.on('connection', (socket) => {
     cancelRoomCleanup(room);
     player.id = socket.id;
     player.disconnected = false;
+    if (room.host === player.userId) cancelHostHandoff(room);
     socket.join(roomCode);
     socket.emit('room_reconnected', buildSyncPayload(roomCode, room, player));
     io.to(roomCode).emit('player_joined', { players: getSanitizedPlayers(room.players) });
@@ -213,16 +281,18 @@ io.on('connection', (socket) => {
     rooms[roomCode] = {
       host: userId,
       players: [{ id: socket.id, userId, username: profile.name, avatar: profile.image, level: profile.level, isHost: true, isAlive: true, disconnected: false }],
-      settings: { minPlayers: 4, maxPlayers: 10 },
+      settings: { ...DEFAULT_SETTINGS },
+      kicked: new Set(),
       gameState: 'Lobby',
       phaseTimerId: null,
       cleanupTimerId: null,
+      hostTimerId: null,
       currentMessage: 'Lobby',
       lastActivity: Date.now()
     };
     resetGameState(rooms[roomCode]);
     socket.join(roomCode);
-    socket.emit('room_created', { roomCode, players: getSanitizedPlayers(rooms[roomCode].players) });
+    socket.emit('room_created', { roomCode, players: getSanitizedPlayers(rooms[roomCode].players), settings: rooms[roomCode].settings });
     console.log(`Room ${roomCode} created by ${profile.name}`);
   });
 
@@ -238,6 +308,7 @@ io.on('connection', (socket) => {
     const existingPlayer = room.players.find(p => p.userId === userId);
     if (existingPlayer) return restorePlayer(roomCode, room, existingPlayer, profile);
 
+    if (room.kicked.has(userId)) return socket.emit('error', 'You were removed from this room by the host.');
     if (room.gameState !== 'Lobby') return socket.emit('error', 'This game is already in progress.');
     if (room.players.length >= room.settings.maxPlayers) return socket.emit('error', 'This room is full.');
 
@@ -262,9 +333,34 @@ io.on('connection', (socket) => {
     restorePlayer(roomCode, room, player);
   });
 
+  socket.on('update_settings', ({ roomCode, settings } = {}) => {
+    const room = rooms[roomCode];
+    if (!room || !isRoomHost(room) || room.gameState !== 'Lobby' || !settings || typeof settings !== 'object') return;
+    const next = { ...room.settings };
+    if (DISCUSSION_TIMES.includes(settings.discussionTime)) next.discussionTime = settings.discussionTime;
+    if (VOTING_TIMES.includes(settings.votingTime)) next.votingTime = settings.votingTime;
+    if (VOTE_VISIBILITY.includes(settings.voteVisibility)) next.voteVisibility = settings.voteVisibility;
+    if (typeof settings.revealRoleOnDeath === 'boolean') next.revealRoleOnDeath = settings.revealRoleOnDeath;
+    room.settings = next;
+    updateLastActivity(roomCode);
+    io.to(roomCode).emit('settings_updated', { settings: next });
+  });
+
+  socket.on('kick_player', ({ roomCode, targetUserId } = {}) => {
+    const room = rooms[roomCode];
+    if (!room || !isRoomHost(room) || room.gameState !== 'Lobby' || targetUserId === userId) return;
+    const target = room.players.find(p => p.userId === targetUserId);
+    if (!target) return;
+    room.players = room.players.filter(p => p !== target);
+    room.kicked.add(targetUserId);
+    io.to(target.id).emit('kicked', { message: 'The host removed you from the room.' });
+    io.in(target.id).socketsLeave(roomCode);
+    io.to(roomCode).emit('player_left', { players: getSanitizedPlayers(room.players) });
+  });
+
   socket.on('start_game', ({ roomCode }) => {
     const room = rooms[roomCode];
-    if (room && room.gameState === 'Lobby' && socket.id === room.players.find(p => p.userId === room.host)?.id && room.players.length >= room.settings.minPlayers) {
+    if (room && room.gameState === 'Lobby' && isRoomHost(room) && room.players.length >= room.settings.minPlayers) {
       updateLastActivity(roomCode);
       resetGameState(room);
       room.gameState = 'RoleAssignment';
@@ -297,6 +393,7 @@ io.on('connection', (socket) => {
           teammates: getMafiaTeammates(room, player),
           message: room.currentMessage,
           timer: 10,
+          settings: room.settings,
           players: getSanitizedPlayers(room.players)
         });
       });
@@ -305,7 +402,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  function broadcastPhase(roomCode, gameState, message, timer, subPhase = null) {
+  function broadcastPhase(roomCode, gameState, message, timer, subPhase = null, extra = {}) {
     const room = rooms[roomCode];
     if (!room) return;
     room.gameState = gameState;
@@ -319,7 +416,8 @@ io.on('connection', (socket) => {
       subPhase,
       message,
       timer,
-      players: getSanitizedPlayers(room.players)
+      players: getSanitizedPlayers(room.players),
+      ...extra
     });
   }
 
@@ -345,22 +443,20 @@ io.on('connection', (socket) => {
     if (!room) return;
     clearRoomTimers(room);
 
-    let eliminatedPlayer = null;
+    let death = 'A quiet night... no one died.';
     if (room.nightActions.kill && room.nightActions.kill !== room.nightActions.save) {
       const player = room.players.find(p => p.userId === room.nightActions.kill);
-      if (player) {
-        player.isAlive = false;
-        eliminatedPlayer = player.username;
-      }
+      if (player) death = `${player.username} was found dead this morning.${eliminate(room, player)}`;
     }
 
-    const msg = 'Medic, close your eyes. Everyone, open your eyes! ' + (eliminatedPlayer ? `${eliminatedPlayer} was found dead this morning.` : 'A quiet night... no one died.');
+    const msg = 'Medic, close your eyes. Everyone, open your eyes! ' + death;
     // Check before broadcasting so the death announcement is narrated as part of game over
     // instead of being cut off by it
     if (checkWinConditions(roomCode, msg)) return;
 
-    broadcastPhase(roomCode, 'Discussion', msg, 60);
-    room.phaseTimerId = setTimeout(() => startVotingPhase(roomCode), 60000);
+    const seconds = room.settings.discussionTime;
+    broadcastPhase(roomCode, 'Discussion', msg, seconds);
+    room.phaseTimerId = setTimeout(() => startVotingPhase(roomCode), seconds * 1000);
   }
 
   function startVotingPhase(roomCode) {
@@ -368,8 +464,23 @@ io.on('connection', (socket) => {
     if (!room) return;
     clearRoomTimers(room);
     room.votes = {};
-    broadcastPhase(roomCode, 'Voting', 'Time to vote! Who is the Mafia?', 30);
-    room.phaseTimerId = setTimeout(() => processVotes(roomCode), 30000);
+    room.votesClosing = false;
+    const seconds = room.settings.votingTime;
+    broadcastPhase(roomCode, 'Voting', 'Time to vote! Who is the Mafia?', seconds);
+    room.phaseTimerId = setTimeout(() => processVotes(roomCode), seconds * 1000);
+  }
+
+  // Once every connected living player has voted, close the ballot shortly instead of waiting out the timer
+  function maybeCloseVoting(roomCode, room) {
+    if (room.gameState !== 'Voting' || room.votesClosing) return;
+    const voters = room.players.filter(p => p.isAlive && !p.disconnected);
+    if (voters.length === 0 || !voters.every(p => room.votes[p.userId])) return;
+    room.votesClosing = true;
+    clearRoomTimers(room);
+    room.phaseEndsAt = Date.now() + VOTE_CLOSE_DELAY_MS;
+    room.currentMessage = 'Everyone has voted. Closing the ballot...';
+    io.to(roomCode).emit('phase_timer', { timer: VOTE_CLOSE_DELAY_MS / 1000, message: room.currentMessage });
+    room.phaseTimerId = setTimeout(() => processVotes(roomCode), VOTE_CLOSE_DELAY_MS);
   }
 
   socket.on('submit_mafia_action', ({ roomCode, targetUserId }) => {
@@ -406,11 +517,12 @@ io.on('connection', (socket) => {
   socket.on('submit_vote', ({ roomCode, targetUserId }) => {
     const room = rooms[roomCode];
     const player = room?.players.find(p => p.id === socket.id);
-    if (room && room.gameState === 'Voting' && player?.isAlive
-        && targetUserId !== player.userId && isAliveTarget(room, targetUserId)) {
+    const validTarget = targetUserId === SKIP_VOTE || (targetUserId !== player?.userId && isAliveTarget(room, targetUserId));
+    if (room && room.gameState === 'Voting' && player?.isAlive && validTarget) {
       updateLastActivity(roomCode);
       room.votes[player.userId] = targetUserId;
-      io.to(roomCode).emit('vote_update', { tally: tallyVotes(room.votes) });
+      io.to(roomCode).emit('vote_update', getVoteState(room));
+      maybeCloseVoting(roomCode, room);
     }
   });
 
@@ -454,31 +566,27 @@ io.on('connection', (socket) => {
     if (!room) return;
     clearRoomTimers(room);
 
-    const tally = tallyVotes(room.votes);
+    const voteState = getVoteState(room);
+    const tally = voteState.tally;
+    const maxVotes = Math.max(0, ...Object.values(tally));
+    const leaders = Object.keys(tally).filter(id => tally[id] === maxVotes);
 
-    let eliminatedUserId = null;
-    let maxVotes = 0;
-    for (const [userId, count] of Object.entries(tally)) {
-      if (count > maxVotes) {
-        maxVotes = count;
-        eliminatedUserId = userId;
-      } else if (count === maxVotes) {
-        eliminatedUserId = null;
-      }
+    // A skip win or any tie (including a tie with skip) spares everyone
+    let message;
+    if (maxVotes === 0) message = 'No one voted. No one was eliminated.';
+    else if (leaders.length > 1) message = 'The town was divided. No one was eliminated.';
+    else if (leaders[0] === SKIP_VOTE) message = 'The town chose to skip. No one was eliminated.';
+    else {
+      const player = room.players.find(p => p.userId === leaders[0]);
+      message = player
+        ? `${player.username} was lynched by the town.${eliminate(room, player)}`
+        : 'The accused has already fled. No one was eliminated.';
     }
-
-    let message = 'The town was divided. No one was eliminated.';
-    if (eliminatedUserId) {
-      const player = room.players.find(p => p.userId === eliminatedUserId);
-      if (player) {
-        player.isAlive = false;
-        message = `${player.username} was lynched by the town.`;
-      }
-    }
+    room.lastVoteResult = voteState;
 
     if (checkWinConditions(roomCode, message)) return;
 
-    broadcastPhase(roomCode, 'NightResult', message, 5);
+    broadcastPhase(roomCode, 'NightResult', message, 5, null, { voteResult: voteState });
     room.phaseTimerId = setTimeout(() => startNightPhase(roomCode), 5000);
   }
 
@@ -540,12 +648,12 @@ io.on('connection', (socket) => {
 
   socket.on('restart_game', ({ roomCode }) => {
     const room = rooms[roomCode];
-    if (room && socket.id === room.players.find(p => p.userId === room.host)?.id) {
+    if (room && isRoomHost(room)) {
       resetGameState(room);
       room.gameState = 'Lobby';
       room.currentMessage = 'Lobby';
-      room.players.forEach(p => { delete p.role; p.isAlive = true; });
-      io.to(roomCode).emit('room_restarted', { players: getSanitizedPlayers(room.players) });
+      room.players.forEach(p => { delete p.role; delete p.revealedRole; p.isAlive = true; });
+      io.to(roomCode).emit('room_restarted', { players: getSanitizedPlayers(room.players), settings: room.settings });
     }
   });
 
@@ -564,11 +672,9 @@ io.on('connection', (socket) => {
           return;
       }
 
-      if (userId === room.host) {
-          room.host = room.players[0].userId;
-          room.players[0].isHost = true;
-      }
       io.to(roomCode).emit('player_left', { players: getSanitizedPlayers(room.players) });
+      if (userId === room.host) transferHost(roomCode, room, pickNextHost(room));
+      maybeCloseVoting(roomCode, room);
 
       // A player quitting mid-game can decide it (e.g. the last Mafia walks out)
       const inProgress = !['Lobby', 'GameOver'].includes(room.gameState);
@@ -579,7 +685,7 @@ io.on('connection', (socket) => {
 
   socket.on('end_game_permanently', ({ roomCode }) => {
     const room = rooms[roomCode];
-    if (room && socket.id === room.players.find(p => p.userId === room.host)?.id) {
+    if (room && isRoomHost(room)) {
       io.to(roomCode).emit('room_terminated', { message: 'The host has ended the game session.' });
       destroyRoom(roomCode);
     }
@@ -596,6 +702,19 @@ io.on('connection', (socket) => {
         // We only remove if they explicitly leave or the room stays empty past the grace period.
         player.disconnected = true;
         io.to(roomCode).emit('player_joined', { players: getSanitizedPlayers(room.players) });
+
+        // Give a dropped host a moment to come back before someone else takes over
+        if (player.userId === room.host && room.players.some(p => !p.disconnected)) {
+          cancelHostHandoff(room);
+          room.hostTimerId = setTimeout(() => {
+            room.hostTimerId = null;
+            if (rooms[roomCode] !== room || !player.disconnected || room.host !== player.userId) return;
+            const next = pickNextHost(room);
+            if (next && !next.disconnected) transferHost(roomCode, room, next);
+          }, HOST_HANDOFF_MS);
+        }
+        // A voter dropping out shouldn't hold the ballot open
+        maybeCloseVoting(roomCode, room);
 
         if (room.players.every(p => p.disconnected)) {
             cancelRoomCleanup(room);

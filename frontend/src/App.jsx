@@ -33,15 +33,15 @@ function App() {
   useEffect(() => {
     // 1. All Listeners defined once
     const onGameStarted = (data) => {
-      const { players } = data;
+      const { players, settings } = data;
       setGameSnapshot(data);
       const code = localStorage.getItem('mafia-room-code');
-      if (players) setRoomData(prev => prev ? { ...prev, players } : { code: code || 'UNKNOWN', players });
+      if (players) setRoomData(prev => prev ? { ...prev, players, settings: settings ?? prev.settings } : { code: code || 'UNKNOWN', players, settings });
       setGameStarted(true);
     };
 
-    const onRoomRestarted = ({ players }) => {
-      setRoomData(prev => prev ? { ...prev, players } : null);
+    const onRoomRestarted = ({ players, settings }) => {
+      setRoomData(prev => prev ? { ...prev, players, settings: settings ?? prev.settings } : null);
       setGameStarted(false);
       setGameSnapshot(null);
     };
@@ -58,7 +58,7 @@ function App() {
         console.log("DEBUG App: Reconnect Event Received", data);
         clearTimeout(reconnectTimeout.current);
         localStorage.setItem('mafia-room-code', data.roomCode);
-        setRoomData({ code: data.roomCode, players: data.players });
+        setRoomData({ code: data.roomCode, players: data.players, settings: data.settings });
         setGameSnapshot(data);
         // Also covers a restart that happened while we were away (back to Lobby)
         setGameStarted(data.gameState !== 'Lobby');
@@ -83,6 +83,22 @@ function App() {
 
     const onPlayersUpdate = ({ players }) => {
         setRoomData(prev => prev ? { ...prev, players } : null);
+    };
+
+    const onSettingsUpdated = ({ settings }) => {
+        setRoomData(prev => prev ? { ...prev, settings } : prev);
+    };
+
+    const onKicked = ({ message }) => {
+        localStorage.removeItem('mafia-room-code');
+        setRoomData(null);
+        setGameStarted(false);
+        setGameSnapshot(null);
+        setNotification({ message, type: 'error' });
+    };
+
+    const onHostChanged = ({ message }) => {
+        setNotification({ message, type: 'info' });
     };
 
     // Socket.io reconnects with a new socket id that the server doesn't know yet;
@@ -114,6 +130,9 @@ function App() {
     socket.on('player_joined', onPlayersUpdate);
     socket.on('player_left', onPlayersUpdate);
     socket.on('error', onError);
+    socket.on('settings_updated', onSettingsUpdated);
+    socket.on('kicked', onKicked);
+    socket.on('host_changed', onHostChanged);
 
     // 3. Initial Handshake Logic (Runs ONCE)
     authClient.getSession().then(({ data: session }) => {
@@ -144,13 +163,16 @@ function App() {
       socket.off('player_joined', onPlayersUpdate);
       socket.off('player_left', onPlayersUpdate);
       socket.off('error', onError);
+      socket.off('settings_updated', onSettingsUpdated);
+      socket.off('kicked', onKicked);
+      socket.off('host_changed', onHostChanged);
       if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
     };
   }, []); // EMPTY ARRAY: Run once on mount ONLY
 
-  const handleRoomJoined = (code, players) => {
+  const handleRoomJoined = (code, players, settings) => {
     localStorage.setItem('mafia-room-code', code);
-    setRoomData({ code, players });
+    setRoomData({ code, players, settings });
     setReconnectError(null);
   };
 
@@ -206,7 +228,7 @@ function App() {
             reconnectError={reconnectError}
         />
       ) : (
-        <Lobby roomCode={roomData.code} initialPlayers={roomData.players} userId={session.user.id} />
+        <Lobby roomCode={roomData.code} initialPlayers={roomData.players} settings={roomData.settings} userId={session.user.id} />
       )}
     </div>
   );
