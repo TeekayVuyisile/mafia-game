@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import Auth from './components/Auth';
 import RoomManager from './components/RoomManager';
@@ -6,30 +6,39 @@ import Lobby from './components/Lobby';
 import Game from './components/Game';
 import LandingPage from './components/LandingPage';
 import Notification from './components/Notification';
-import { supabase } from './supabaseClient';
+import { authClient } from './authClient';
 import { socket } from './socket';
 import { AnimatePresence } from 'framer-motion';
 
 function App() {
-  const [session, setSession] = useState(null);
+  const { data: session, isPending: sessionPending } = authClient.useSession();
+  const userId = session?.user?.id ?? null;
   const [showAuth, setShowAuth] = useState(false);
   const [roomData, setRoomData] = useState(null);
   const [gameStarted, setGameStarted] = useState(false);
-  const [initialGameState, setInitialGameState] = useState('RoleAssignment');
-  const [initialSubPhase, setInitialSubPhase] = useState(null);
-  const [initialMessage, setInitialMessage] = useState("");
-  const [userRole, setUserRole] = useState(null);
+  // State the Game screen mounts into: a game_started payload or a room_reconnected sync
+  const [gameSnapshot, setGameSnapshot] = useState(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState(null);
   const [notification, setNotification] = useState(null);
   
   const reconnectTimeout = useRef(null);
+  const roomCodeRef = useRef(null);
+  const userIdRef = useRef(null);
+
+  useEffect(() => {
+    roomCodeRef.current = roomData?.code ?? null;
+  }, [roomData]);
+
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
 
   useEffect(() => {
     // 1. All Listeners defined once
-    const onGameStarted = ({ gameState, role, players }) => {
-      setInitialGameState(gameState);
-      setUserRole(role);
+    const onGameStarted = (data) => {
+      const { players } = data;
+      setGameSnapshot(data);
       const code = localStorage.getItem('mafia-room-code');
       if (players) setRoomData(prev => prev ? { ...prev, players } : { code: code || 'UNKNOWN', players });
       setGameStarted(true);
@@ -38,8 +47,7 @@ function App() {
     const onRoomRestarted = ({ players }) => {
       setRoomData(prev => prev ? { ...prev, players } : null);
       setGameStarted(false);
-      setUserRole(null);
-      setInitialGameState('RoleAssignment');
+      setGameSnapshot(null);
     };
 
     const onRoomTerminated = ({ message }) => {
@@ -53,12 +61,11 @@ function App() {
     const onRoomReconnected = (data) => {
         console.log("DEBUG App: Reconnect Event Received", data);
         clearTimeout(reconnectTimeout.current);
+        localStorage.setItem('mafia-room-code', data.roomCode);
         setRoomData({ code: data.roomCode, players: data.players });
-        setInitialGameState(data.gameState);
-        setInitialSubPhase(data.subPhase);
-        setInitialMessage(data.message);
-        setUserRole(data.role);
-        if (data.gameState !== 'Lobby') setGameStarted(true);
+        setGameSnapshot(data);
+        // Also covers a restart that happened while we were away (back to Lobby)
+        setGameStarted(data.gameState !== 'Lobby');
         setReconnecting(false);
         setReconnectError(null);
     };
@@ -70,13 +77,28 @@ function App() {
         setReconnectError(`Reconnection failed: ${msg}`);
         setReconnecting(false);
         clearTimeout(reconnectTimeout.current);
+        // The room vanished while we were in it (e.g. server restart): fall back to the room picker
+        if (roomCodeRef.current) {
+            setRoomData(null);
+            setGameStarted(false);
+            setGameSnapshot(null);
+        }
     };
 
     const onPlayersUpdate = ({ players }) => {
         setRoomData(prev => prev ? { ...prev, players } : null);
     };
 
+    // Socket.io reconnects with a new socket id that the server doesn't know yet;
+    // re-identify so we rejoin the room and receive a full state sync
+    const onConnect = () => {
+        if (roomCodeRef.current && userIdRef.current) {
+            socket.emit('reconnect_user', { roomCode: roomCodeRef.current, userId: userIdRef.current });
+        }
+    };
+
     // 2. Attach Listeners
+    socket.on('connect', onConnect);
     socket.on('game_started', onGameStarted);
     socket.on('room_restarted', onRoomRestarted);
     socket.on('room_terminated', onRoomTerminated);
@@ -86,10 +108,8 @@ function App() {
     socket.on('error', onError);
 
     // 3. Initial Handshake Logic (Runs ONCE)
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+    authClient.getSession().then(({ data: session }) => {
       if (session) {
-          localStorage.setItem('mafia-user-id', session.user.id);
           const savedRoomCode = localStorage.getItem('mafia-room-code');
           if (savedRoomCode) {
               console.log("DEBUG App: Mount - Attempting Reconnect to", savedRoomCode);
@@ -106,13 +126,8 @@ function App() {
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) localStorage.setItem('mafia-user-id', session.user.id);
-    });
-
     return () => {
-      subscription.unsubscribe();
+      socket.off('connect', onConnect);
       socket.off('game_started', onGameStarted);
       socket.off('room_restarted', onRoomRestarted);
       socket.off('room_terminated', onRoomTerminated);
@@ -130,7 +145,11 @@ function App() {
     setReconnectError(null);
   };
 
-  const username = session?.user?.user_metadata?.username || session?.user?.email?.split('@')[0] || 'Player';
+  const username = session?.user?.name || session?.user?.email?.split('@')[0] || 'Player';
+
+  if (sessionPending) {
+      return <div className="min-vh-100" style={{ background: 'var(--bg-primary)' }} />;
+  }
 
   if (reconnecting) {
       return (
@@ -164,12 +183,8 @@ function App() {
       ) : gameStarted && roomData ? (
         <Game 
           roomCode={roomData.code} 
-          username={username} 
-          initialGameState={initialGameState} 
-          initialSubPhase={initialSubPhase}
-          initialMessage={initialMessage}
-          initialRole={userRole} 
-          initialPlayers={roomData.players}
+          userId={session.user.id}
+          snapshot={gameSnapshot || { gameState: 'RoleAssignment', players: roomData.players }}
         />
       ) : !roomData ? (
         <RoomManager 
@@ -179,7 +194,7 @@ function App() {
             reconnectError={reconnectError}
         />
       ) : (
-        <Lobby roomCode={roomData.code} initialPlayers={roomData.players} username={username} />
+        <Lobby roomCode={roomData.code} initialPlayers={roomData.players} userId={session.user.id} />
       )}
     </div>
   );

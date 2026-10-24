@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { socket } from '../socket';
-import { supabase } from '../supabaseClient';
+import { authClient } from '../authClient';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   PlusCircle, 
@@ -68,9 +68,7 @@ const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
     if (!newUsername.trim()) return setNotification({ message: "Username cannot be empty", type: 'error' });
     setIsUpdating(true);
     setNotification(null);
-    const { error } = await supabase.auth.updateUser({
-      data: { username: newUsername.trim() }
-    });
+    const { error } = await authClient.updateUser({ name: newUsername.trim() });
     
     if (error) {
       setNotification({ message: error.message, type: 'error' });
@@ -83,11 +81,10 @@ const RoomManager = ({ username, userId, onRoomJoined, reconnectError }) => {
 
   const handleSignOut = async () => {
     if (window.confirm("Are you sure you want to exit the underground?")) {
-      const { error } = await supabase.auth.signOut();
+      const { error } = await authClient.signOut();
       if (error) setNotification({ message: error.message, type: 'error' });
       else {
         localStorage.removeItem('mafia-room-code');
-        localStorage.removeItem('mafia-user-id');
         window.location.reload();
       }
     }

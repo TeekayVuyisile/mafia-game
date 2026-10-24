@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { socket } from '../socket';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PersonFill, StarFill, PlayFill, DoorOpenFill, PeopleFill, WifiOff } from 'react-bootstrap-icons';
 
-const Lobby = ({ roomCode, initialPlayers, username }) => {
+const Lobby = ({ roomCode, initialPlayers, userId }) => {
   const [players, setPlayers] = useState(initialPlayers);
 
   useEffect(() => {
@@ -17,10 +17,9 @@ const Lobby = ({ roomCode, initialPlayers, username }) => {
     };
   }, []);
 
-  const isHost = players.find(p => p.username === username)?.isHost;
+  const isHost = players.find(p => p.userId === userId)?.isHost;
 
   const handleLeave = () => {
-      const userId = localStorage.getItem('mafia-user-id'); // We'll set this in App.jsx
       socket.emit('leave_room_explicitly', { roomCode, userId });
       localStorage.removeItem('mafia-room-code');
       window.location.reload();
@@ -70,10 +69,10 @@ const Lobby = ({ roomCode, initialPlayers, username }) => {
                         </div>
                         <div>
                           <span 
-                            className={`h5 mb-0 d-block ${player.username === username ? 'gold-text fw-bold' : 'text-primary'}`}
+                            className={`h5 mb-0 d-block ${player.userId === userId ? 'gold-text fw-bold' : 'text-primary'}`}
                             style={{ fontFamily: 'var(--font-ui)', letterSpacing: '1px' }}
                           >
-                            {player.username} {player.username === username && '(YOU)'}
+                            {player.username} {player.userId === userId && '(YOU)'}
                           </span>
                           {player.disconnected && (
                             <small className="text-danger pulse-red d-block mt-1" style={{ fontSize: '0.7rem' }}>

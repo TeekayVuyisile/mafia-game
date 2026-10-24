@@ -11,14 +11,14 @@ A cinematic, realtime multiplayer Mafia party game built with the PERN stack (Po
 - **Realtime Synchronization:** Powered by Socket.io for instantaneous phase transitions, voting, and chat.
 - **Narrator (TTS):** A browser-based Text-to-Speech narrator that announces game phases and results.
 - **Identity Persistence:** Seamless reconnection support. If you lose your connection, the "Command Center" helps you intercept your previous frequency and jump back into the action.
-- **Account Management:** Secure authentication via Supabase (Email/Password & Google), including customizable usernames.
+- **Account Management:** Authentication via Better Auth with accounts stored in Neon Postgres (Email/Password & optional Google), including customizable usernames.
 - **Garbage Collection:** Automated backend cleanup to ensure server stability by pruning inactive rooms.
 
 ## 🛠️ Tech Stack
 
 - **Frontend:** React (Vite), Framer Motion, Bootstrap 5, Socket.io-client.
 - **Backend:** Node.js, Express, Socket.io.
-- **Database & Auth:** Supabase (PostgreSQL).
+- **Database & Auth:** Neon (PostgreSQL) + Better Auth.
 - **Icons:** React Bootstrap Icons.
 - **Narrator:** Web Speech API.
 
@@ -26,7 +26,7 @@ A cinematic, realtime multiplayer Mafia party game built with the PERN stack (Po
 
 ### Prerequisites
 - Node.js (v18+)
-- A Supabase account and project.
+- A [Neon](https://neon.tech) Postgres project (stores user accounts).
 
 ### 1. Clone the Repository
 ```bash
@@ -40,21 +40,26 @@ cd mafia-game
 3. Create a `.env` file based on `.env.example`:
    ```env
    PORT=5000
-   SUPABASE_URL=your_supabase_url
-   SUPABASE_ANON_KEY=your_supabase_anon_key
+   DATABASE_URL=postgresql://...neon.tech/neondb?sslmode=verify-full   # Neon -> Connect (pooled)
+   BETTER_AUTH_SECRET=<random 32+ chars>
+   BETTER_AUTH_URL=http://localhost:5173   # the FRONTEND url
+   GOOGLE_CLIENT_ID=        # optional
+   GOOGLE_CLIENT_SECRET=    # optional
    ```
-4. Start the server: `npm start` (or `node index.js`)
+4. Create the auth tables in Neon: `npm run migrate` (safe to re-run)
+5. Start the server: `npm run dev` (auto-restart) or `npm start`
 
 ### 3. Frontend Setup
 1. Navigate to the frontend folder: `cd ../frontend`
 2. Install dependencies: `npm install`
-3. Create a `.env` file based on `.env.example`:
+3. Optionally create a `.env` (defaults shown):
    ```env
-   VITE_SUPABASE_URL=your_supabase_url
-   VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
    VITE_SOCKET_URL=http://localhost:5000
+   VITE_API_PROXY_TARGET=http://localhost:5000
    ```
 4. Start the development server: `npm run dev`
+
+Auth requests go to `/api/auth/*` on the frontend's own origin and are proxied to the backend (Vite proxy in dev, `frontend/vercel.json` in production), so login cookies stay first-party.
 
 ---
 
@@ -64,18 +69,17 @@ cd mafia-game
 1. **New Web Service:** Connect your GitHub repo.
 2. **Root Directory:** `backend`
 3. **Build Command:** `npm install`
-4. **Start Command:** `node index.js`
-5. **Environment Variables:** Add `SUPABASE_URL` and `SUPABASE_ANON_KEY`.
-6. **Note:** Ensure you use the provided Render URL for the frontend's `VITE_SOCKET_URL`.
+4. **Start Command:** `npm start`
+5. **Environment Variables:** `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (your Vercel URL, e.g. `https://mafia-game-opal.vercel.app`), and optionally `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
+6. **Google sign-in (optional):** in Google Cloud Console create an OAuth client with redirect URI `<BETTER_AUTH_URL>/api/auth/callback/google`.
 
 ### Frontend (Vercel)
 1. **New Project:** Import your GitHub repo.
 2. **Framework Preset:** Vite.
 3. **Root Directory:** `frontend`
 4. **Environment Variables:**
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_ANON_KEY`
    - `VITE_SOCKET_URL`: (Your Render Backend URL)
+5. **API proxy:** `frontend/vercel.json` rewrites `/api/*` to the Render backend — update its URL if the backend moves.
 5. **Deploy:** Hit deploy and you're live!
 
 ---

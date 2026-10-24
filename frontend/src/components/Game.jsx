@@ -1,148 +1,156 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { socket } from '../socket';
+import { useNarrator } from '../useNarrator';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  ShieldPlus, 
-  PersonCircle, 
-  ChatRightDotsFill, 
-  HourglassSplit, 
+import {
+  ShieldPlus,
+  PersonCircle,
+  ChatRightDotsFill,
+  HourglassSplit,
   CheckCircleFill,
   XCircleFill,
   ArrowRepeat,
   SendFill,
   PeopleFill,
   GearFill,
-  ExclamationTriangleFill
+  ExclamationTriangleFill,
+  VolumeUpFill,
+  VolumeMuteFill,
+  WifiOff
 } from 'react-bootstrap-icons';
 
-const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMessage, initialRole, initialPlayers }) => {
-  console.log("DEBUG Game: Component Mounted", { initialGameState, initialSubPhase, initialMessage });
-  
-  const [role, setRole] = useState(initialRole);
-  const [gameState, setGameState] = useState(initialGameState);
-  const [subPhase, setSubPhase] = useState(initialSubPhase); 
-  const [timer, setTimer] = useState(null);
-  const [message, setMessage] = useState(initialMessage || (initialRole ? `You are a ${initialRole}` : 'Wait for your role...'));
-  const [players, setPlayers] = useState(initialPlayers || []);
-  const [chat, setChat] = useState([]);
+const MAX_CHAT_LENGTH = 300;
+
+const toEndsAt = (seconds) => (typeof seconds === 'number' ? Date.now() + seconds * 1000 : null);
+
+const gameOverNarration = ({ winner, reason, lastEvent }) =>
+  [lastEvent, `Game over. ${winner} victory!`, reason].filter(Boolean).join(' ');
+
+const formatTime = (timestamp) =>
+  typeof timestamp === 'number'
+    ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : timestamp;
+
+// `snapshot` is the state to mount into: a fresh game_started payload or a room_reconnected sync
+const Game = ({ roomCode, userId, snapshot }) => {
+  const [role, setRole] = useState(snapshot.role ?? null);
+  const [gameState, setGameState] = useState(snapshot.gameState);
+  const [subPhase, setSubPhase] = useState(snapshot.subPhase ?? null);
+  const [phaseEndsAt, setPhaseEndsAt] = useState(() => toEndsAt(snapshot.timer));
+  const [now, setNow] = useState(() => Date.now());
+  const [message, setMessage] = useState(snapshot.message || (snapshot.role ? `You are a ${snapshot.role}` : 'Wait for your role...'));
+  const [players, setPlayers] = useState(snapshot.players || []);
+  const [chat, setChat] = useState(snapshot.chat || []);
   const [inputMessage, setInputMessage] = useState('');
-  const [voteTally, setVoteTally] = useState({});
-  const [winnerData, setWinnerData] = useState(null);
-  const [selectedTarget, setSelectedTarget] = useState(null);
-  const chatEndRef = useRef(null);
-  
-  const lastSpoken = useRef("");
-  const resumeTimeout = useRef(null);
-  const currentUtterance = useRef(null);
+  const [sending, setSending] = useState(false);
+  const [chatError, setChatError] = useState(null);
+  const [voteTally, setVoteTally] = useState(snapshot.voteTally || {});
+  const [winnerData, setWinnerData] = useState(snapshot.result || null);
+  const [selectedTarget, setSelectedTarget] = useState(snapshot.myTarget ?? null);
+  const [connected, setConnected] = useState(socket.connected);
+  const chatBoxRef = useRef(null);
+  const stickToBottom = useRef(true);
 
-  const speak = (text) => {
-    if (!('speechSynthesis' in window)) return;
-    if (!text || text === lastSpoken.current) return;
+  const narrator = useNarrator();
+  const { speak } = narrator;
 
-    // Clear existing heartbeat and utterance
-    if (resumeTimeout.current) clearTimeout(resumeTimeout.current);
-    window.speechSynthesis.cancel();
-
-    // Use a slight delay before speaking to ensure 'cancel' has cleared the buffer
-    setTimeout(() => {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.95;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-      
-      // PERSIST THE UTTERANCE to prevent Garbage Collection (common Chrome bug)
-      currentUtterance.current = utterance;
-
-      const resumeHeartbeat = () => {
-        if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-          window.speechSynthesis.pause();
-          window.speechSynthesis.resume();
-        }
-        resumeTimeout.current = setTimeout(resumeHeartbeat, 10000); // Heartbeat every 10s
-      };
-
-      utterance.onstart = () => {
-        resumeHeartbeat();
-      };
-
-      utterance.onend = () => {
-        if (resumeTimeout.current) clearTimeout(resumeTimeout.current);
-        currentUtterance.current = null;
-      };
-
-      utterance.onerror = (event) => {
-        console.error("SpeechSynthesis Error:", event);
-        if (resumeTimeout.current) clearTimeout(resumeTimeout.current);
-        currentUtterance.current = null;
-      };
-
-      lastSpoken.current = text;
-      window.speechSynthesis.speak(utterance);
-    }, 100);
-  };
+  // Narrate the state we mounted into (game start, or a page-reload reconnect)
+  useEffect(() => {
+    speak(snapshot.result ? gameOverNarration(snapshot.result) : snapshot.message);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speak]);
 
   useEffect(() => {
-    if (initialRole && !role) {
-      setRole(initialRole);
-    }
-  }, [initialRole]);
+    const startPhaseClock = (seconds) => {
+      setNow(Date.now());
+      setPhaseEndsAt(toEndsAt(seconds));
+    };
 
-  useEffect(() => {
-    // Narrate state on mount if it's a reconnection
-    if (initialMessage && !lastSpoken.current) {
-        speak(initialMessage);
-    } else if (role && !lastSpoken.current) {
-        speak(`Your role has been assigned. Check your secret identity.`);
-    }
+    // Server re-sent the full state after our socket reconnected
+    const handleResync = (data) => {
+      setGameState(data.gameState);
+      setSubPhase(data.subPhase ?? null);
+      setMessage(data.message);
+      setRole(data.role ?? null);
+      if (data.players) setPlayers(data.players);
+      setChat(data.chat || []);
+      setVoteTally(data.voteTally || {});
+      setWinnerData(data.result || null);
+      setSelectedTarget(data.myTarget ?? null);
+      startPhaseClock(data.timer);
+      speak(data.result ? gameOverNarration(data.result) : data.message);
+    };
 
     const handlePhaseChange = ({ gameState, subPhase, message, timer, players }) => {
-      lastSpoken.current = ""; 
       setGameState(gameState);
-      setSubPhase(subPhase);
+      setSubPhase(subPhase ?? null);
       setMessage(message);
-      setTimer(timer);
+      startPhaseClock(timer);
       setSelectedTarget(null);
+      setChatError(null);
       if (players) setPlayers(players);
-      if (gameState !== 'Voting') setVoteTally({});
+      setVoteTally({});
       speak(message);
     };
 
-    const handleReceiveMessage = (msg) => setChat(prev => [...prev, msg]);
+    const handleReceiveMessage = (msg) =>
+      setChat(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
     const handleActionConfirmed = ({ message }) => setMessage(message);
     const handleVoteUpdate = ({ tally }) => setVoteTally(tally);
+    const handlePlayersUpdate = ({ players }) => setPlayers(players);
     const handleGameOver = (data) => {
       setGameState('GameOver');
       setWinnerData(data);
-      speak(`Game Over. ${data.winner} victory!`);
+      setPhaseEndsAt(null);
+      speak(gameOverNarration(data));
     };
+    const handleConnect = () => setConnected(true);
+    const handleDisconnect = () => setConnected(false);
 
+    socket.on('room_reconnected', handleResync);
     socket.on('phase_change', handlePhaseChange);
     socket.on('receive_message', handleReceiveMessage);
     socket.on('action_confirmed', handleActionConfirmed);
     socket.on('vote_update', handleVoteUpdate);
+    socket.on('player_joined', handlePlayersUpdate);
+    socket.on('player_left', handlePlayersUpdate);
     socket.on('game_over', handleGameOver);
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
 
     return () => {
+      socket.off('room_reconnected', handleResync);
       socket.off('phase_change', handlePhaseChange);
       socket.off('receive_message', handleReceiveMessage);
       socket.off('action_confirmed', handleActionConfirmed);
       socket.off('vote_update', handleVoteUpdate);
-      socket.off('game_over');
-      if (resumeTimeout.current) clearTimeout(resumeTimeout.current);
+      socket.off('player_joined', handlePlayersUpdate);
+      socket.off('player_left', handlePlayersUpdate);
+      socket.off('game_over', handleGameOver);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
     };
-  }, [role]); 
+  }, [speak]);
 
+  // Count down against an absolute deadline so the clock can't drift or stall
   useEffect(() => {
-    if (timer === null || timer <= 0) return;
-    const interval = setInterval(() => {
-      setTimer(prev => (prev !== null && prev > 0 ? prev - 1 : 0));
-    }, 1000);
+    if (!phaseEndsAt) return;
+    const interval = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(interval);
-  }, [timer]);
+  }, [phaseEndsAt]);
 
+  const timer = phaseEndsAt ? Math.max(0, Math.ceil((phaseEndsAt - now) / 1000)) : null;
+
+  // Follow new messages unless the player has scrolled up to read history
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chat]);
+    const box = chatBoxRef.current;
+    if (box && stickToBottom.current) box.scrollTop = box.scrollHeight;
+  }, [chat, gameState]);
+
+  const handleChatScroll = () => {
+    const box = chatBoxRef.current;
+    if (box) stickToBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  };
 
   const handleAction = (targetUserId) => {
     setSelectedTarget(targetUserId);
@@ -156,7 +164,7 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
 
   const handleLeaveRoom = () => {
     if (window.confirm("Are you sure you want to leave the game?")) {
-      socket.emit('leave_room_explicitly', { roomCode, userId: players.find(p => p.username === username)?.userId });
+      socket.emit('leave_room_explicitly', { roomCode, userId });
       localStorage.removeItem('mafia-room-code');
       window.location.reload();
     }
@@ -164,9 +172,21 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
 
   const handleSendMessage = (e) => {
     e.preventDefault();
-    if (!inputMessage.trim()) return;
-    socket.emit('send_message', { roomCode, message: inputMessage });
-    setInputMessage('');
+    const text = inputMessage.trim();
+    if (!text || sending) return;
+    // Socket.io buffers emits while offline and would replay them later, causing duplicates on retry
+    if (!socket.connected) return setChatError('Connection lost. Reconnecting...');
+
+    setSending(true);
+    setChatError(null);
+    stickToBottom.current = true;
+    socket.timeout(5000).emit('send_message', { roomCode, message: text }, (err, res) => {
+      setSending(false);
+      if (err) return setChatError('Message not delivered. Try again.');
+      if (!res?.ok) return setChatError(res?.error || 'Message rejected.');
+      // Keep anything typed while the message was in flight
+      setInputMessage(prev => (prev.trim() === text ? '' : prev));
+    });
   };
 
   const getRoleIcon = (roleName) => {
@@ -187,22 +207,45 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
     }
   };
 
-  const isAlive = players.find(p => p.username === username)?.isAlive ?? true;
-  const isHost = players.find(p => p.username === username)?.isHost;
+  const me = players.find(p => p.userId === userId);
+  const isAlive = me?.isAlive ?? true;
+  const isHost = me?.isHost;
+
+  const narratorBanner = narrator.supported && narrator.blocked && !narrator.muted && (
+    <button
+      className="btn btn-gold w-100 mb-4 py-3 d-flex align-items-center justify-content-center"
+      onClick={narrator.unlock}
+    >
+      <VolumeUpFill className="me-2" /> TAP TO ENABLE THE NARRATOR
+    </button>
+  );
+
+  const connectionBanner = !connected && (
+    <div className="alert d-flex align-items-center mb-4 rounded-4" style={{ background: 'rgba(139, 0, 0, 0.2)', border: '1px solid var(--role-mafia)', color: 'var(--text-primary)' }}>
+      <WifiOff className="me-3" /> Connection lost. Reconnecting to the room...
+    </div>
+  );
 
   if (gameState === 'GameOver' && winnerData) {
     return (
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.8, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        className="container min-vh-100 d-flex align-items-center justify-content-center py-5"
+        className="container min-vh-100 d-flex flex-column align-items-center justify-content-center py-5"
         style={{ background: 'var(--bg-primary)' }}
       >
+        <div style={{ width: '100%', maxWidth: '800px' }}>
+          {connectionBanner}
+          {narratorBanner}
+        </div>
         <div className="card shadow-lg border-0 glass-panel overflow-hidden gold-border" style={{ width: '100%', maxWidth: '800px', borderRadius: '30px' }}>
           <div className={`p-5 text-center ${winnerData.winner === 'Mafia' ? 'pulse-red' : 'gold-glow'}`} style={{ background: winnerData.winner === 'Mafia' ? 'rgba(139, 0, 0, 0.2)' : 'rgba(200, 169, 107, 0.1)' }}>
             <h1 className="display-3 fw-bold mb-0 gold-text" style={{ letterSpacing: '10px' }}>{(winnerData.winner || 'GAME').toUpperCase()} VICTORIOUS</h1>
           </div>
           <div className="card-body p-5">
+            {winnerData.lastEvent && (
+              <p className="text-center mb-2" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)' }}>{winnerData.lastEvent}</p>
+            )}
             <h4 className="text-center mb-5" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)', textTransform: 'none' }}>{winnerData.reason}</h4>
             <div className="row g-4">
               {winnerData.players.map(p => (
@@ -245,7 +288,9 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
     <div className="container-fluid min-vh-100 py-4" style={{ background: 'var(--bg-primary)' }}>
       <div className="row g-4 h-100 px-lg-4">
         <div className="col-lg-8">
-          <motion.div 
+          {connectionBanner}
+          {narratorBanner}
+          <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             className="card glass-panel shadow-lg mb-4 gold-border"
@@ -267,6 +312,16 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
                     <div className="fs-2 fw-bold" style={{ color: timer <= 10 ? 'var(--role-mafia)' : 'var(--accent-gold)', fontFamily: 'var(--font-title)' }}>{timer}s</div>
                   </div>
                 )}
+                {narrator.supported && (
+                  <button
+                    className="btn btn-link gold-text p-0"
+                    title={narrator.muted ? 'Unmute narrator' : 'Mute narrator'}
+                    aria-label={narrator.muted ? 'Unmute narrator' : 'Mute narrator'}
+                    onClick={narrator.toggleMute}
+                  >
+                    {narrator.muted ? <VolumeMuteFill size={22} /> : <VolumeUpFill size={22} />}
+                  </button>
+                )}
                 <button className="btn btn-link gold-text text-decoration-none fw-bold" style={{ fontSize: '0.8rem', letterSpacing: '1px' }} onClick={handleLeaveRoom}>
                   ABANDON
                 </button>
@@ -276,7 +331,7 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
             <div className="card-body p-4" style={{ minHeight: '450px' }}>
               <AnimatePresence mode="wait">
                 {gameState === 'Night' && isAlive && ((role === 'Mafia' && subPhase === 'MafiaTurn') || (role === 'Medic' && subPhase === 'MedicTurn')) ? (
-                  <motion.div 
+                  <motion.div
                     key="night-actions"
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -287,15 +342,15 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
                       {role === 'Mafia' ? 'SELECT YOUR CONTRACT' : 'SELECT YOUR PROTECTION'}
                     </h5>
                     <div className="row g-3">
-                      {players.filter(p => p.isAlive && (role === 'Medic' || p.username !== username)).map(player => (
+                      {players.filter(p => p.isAlive && (role === 'Medic' || p.userId !== userId)).map(player => (
                         <div key={player.userId} className="col-md-6">
                           <button
                             className={`btn btn-lg w-100 p-4 text-start d-flex justify-content-between align-items-center rounded-4 transition-all ${
-                              selectedTarget === player.userId 
-                                ? 'gold-border gold-glow' 
+                              selectedTarget === player.userId
+                                ? 'gold-border gold-glow'
                                 : 'glass-panel'
                             }`}
-                            style={{ 
+                            style={{
                               borderWidth: '2px',
                               background: selectedTarget === player.userId ? 'rgba(200, 169, 107, 0.1)' : 'rgba(255,255,255,0.03)',
                               color: 'var(--text-primary)'
@@ -310,7 +365,7 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
                     </div>
                   </motion.div>
                 ) : gameState === 'Voting' && isAlive ? (
-                  <motion.div 
+                  <motion.div
                     key="voting-actions"
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -319,13 +374,13 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
                       <PeopleFill className="me-3"/> CAST YOUR VOTE
                     </h5>
                     <div className="row g-3">
-                      {players.filter(p => p.isAlive && p.username !== username).map(player => (
+                      {players.filter(p => p.isAlive && p.userId !== userId).map(player => (
                         <div key={player.userId} className="col-md-6">
                           <button
                             className={`btn btn-lg w-100 p-4 text-start d-flex justify-content-between align-items-center rounded-4 transition-all ${
                               selectedTarget === player.userId ? 'gold-border gold-glow' : 'glass-panel'
                             }`}
-                            style={{ 
+                            style={{
                               borderWidth: '2px',
                               background: selectedTarget === player.userId ? 'rgba(200, 169, 107, 0.1)' : 'rgba(255,255,255,0.03)',
                               color: 'var(--text-primary)'
@@ -353,36 +408,63 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
 
               {gameState === 'Discussion' && (
                 <div className="mt-5">
-                  <div className="glass-panel p-4 mb-3" style={{ height: '350px', overflowY: 'auto', border: '1px solid rgba(200, 169, 107, 0.1)' }}>
-                    {chat.map((msg, idx) => (
-                      <div key={idx} className={`mb-4 d-flex flex-column ${msg.username === username ? 'align-items-end' : 'align-items-start'}`}>
-                        <small style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', letterSpacing: '1px' }}>{msg.username.toUpperCase()} • {msg.timestamp}</small>
-                        <div className={`p-3 rounded-4 mt-2 ${msg.username === username ? 'gold-border' : ''}`} 
-                             style={{ 
-                               maxWidth: '80%', 
-                               background: msg.username === username ? 'rgba(200, 169, 107, 0.1)' : 'rgba(255,255,255,0.05)',
-                               fontSize: '0.95rem'
-                             }}>
-                          {msg.message}
+                  <div
+                    ref={chatBoxRef}
+                    onScroll={handleChatScroll}
+                    className="glass-panel p-4 mb-3"
+                    style={{ height: '350px', overflowY: 'auto', border: '1px solid rgba(200, 169, 107, 0.1)' }}
+                  >
+                    {chat.length === 0 && (
+                      <p className="text-center mt-5 mb-0" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', letterSpacing: '1px' }}>
+                        NO MESSAGES YET. WHO DO YOU SUSPECT?
+                      </p>
+                    )}
+                    {chat.map((msg) => {
+                      const mine = msg.userId === userId;
+                      return (
+                        <div key={msg.id} className={`mb-4 d-flex flex-column ${mine ? 'align-items-end' : 'align-items-start'}`}>
+                          <small style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', letterSpacing: '1px' }}>{msg.username.toUpperCase()} • {formatTime(msg.timestamp)}</small>
+                          <div className={`p-3 rounded-4 mt-2 ${mine ? 'gold-border' : ''}`}
+                               style={{
+                                 maxWidth: '80%',
+                                 background: mine ? 'rgba(200, 169, 107, 0.1)' : 'rgba(255,255,255,0.05)',
+                                 fontSize: '0.95rem',
+                                 overflowWrap: 'anywhere'
+                               }}>
+                            {msg.message}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                    <div ref={chatEndRef} />
+                      );
+                    })}
                   </div>
-                  {isAlive && (
-                    <form onSubmit={handleSendMessage} className="d-flex gap-2">
-                      <input
-                        type="text"
-                        className="form-control form-control-lg rounded-pill px-4"
-                        placeholder="SEND A CODED MESSAGE..."
-                        value={inputMessage}
-                        style={{ fontSize: '0.9rem', letterSpacing: '1px' }}
-                        onChange={(e) => setInputMessage(e.target.value)}
-                      />
-                      <button type="submit" className="btn btn-gold rounded-circle p-3 d-flex align-items-center justify-content-center">
-                        <SendFill size={20} />
-                      </button>
-                    </form>
+                  {isAlive ? (
+                    <>
+                      <form onSubmit={handleSendMessage} className="d-flex gap-2">
+                        <input
+                          type="text"
+                          className="form-control form-control-lg rounded-pill px-4"
+                          placeholder={connected ? 'SEND A CODED MESSAGE...' : 'RECONNECTING...'}
+                          value={inputMessage}
+                          maxLength={MAX_CHAT_LENGTH}
+                          style={{ fontSize: '0.9rem', letterSpacing: '1px' }}
+                          onChange={(e) => setInputMessage(e.target.value)}
+                        />
+                        <button
+                          type="submit"
+                          disabled={sending || !connected || !inputMessage.trim()}
+                          className="btn btn-gold rounded-circle p-3 d-flex align-items-center justify-content-center"
+                        >
+                          {sending ? <span className="spinner-border spinner-border-sm" role="status" /> : <SendFill size={20} />}
+                        </button>
+                      </form>
+                      {chatError && (
+                        <small className="d-block mt-2 ps-3" style={{ color: 'var(--role-mafia)' }}>{chatError}</small>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-center mb-0" style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', letterSpacing: '1px' }}>
+                      THE DEAD CANNOT SPEAK. YOU CAN STILL READ ALONG.
+                    </p>
                   )}
                 </div>
               )}
@@ -390,7 +472,7 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
           </motion.div>
 
           {isHost && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="card glass-panel p-4 border-0 shadow-lg"
@@ -413,7 +495,7 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
         </div>
 
         <div className="col-lg-4">
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             className="d-flex flex-column gap-4 h-100"
@@ -434,20 +516,22 @@ const Game = ({ roomCode, username, initialGameState, initialSubPhase, initialMe
                 {players.map(player => (
                   <div key={player.userId} className="list-group-item d-flex justify-content-between align-items-center p-4 bg-transparent border-0" style={{ borderBottom: '1px solid rgba(200, 169, 107, 0.05) !important' }}>
                     <div className="d-flex align-items-center">
-                      <div 
-                        className="p-1 rounded-circle me-3" 
+                      <div
+                        className="p-1 rounded-circle me-3"
                         style={{ border: `2px solid ${player.isAlive ? 'var(--accent-gold)' : 'var(--text-secondary)'}` }}
                       >
                          <div className="p-1 rounded-circle" style={{ background: player.isAlive ? 'var(--accent-gold)' : 'transparent', width: '8px', height: '8px' }} />
                       </div>
                       <span className={`h6 mb-0 ${!player.isAlive ? 'text-decoration-line-through opacity-50' : 'fw-bold'}`} style={{ letterSpacing: '1px' }}>
-                        {player.username} {player.username === username && <span className="gold-text ms-2">(YOU)</span>}
+                        {player.username} {player.userId === userId && <span className="gold-text ms-2">(YOU)</span>}
                       </span>
                     </div>
-                    {player.isAlive ? (
-                      <span className="small gold-text fw-bold" style={{ fontSize: '0.6rem', letterSpacing: '1px' }}>ACTIVE</span>
-                    ) : (
+                    {!player.isAlive ? (
                       <span className="small text-danger fw-bold" style={{ fontSize: '0.6rem', letterSpacing: '1px' }}>ELIMINATED</span>
+                    ) : player.disconnected ? (
+                      <span className="small fw-bold" style={{ fontSize: '0.6rem', letterSpacing: '1px', color: 'var(--text-secondary)' }}>OFFLINE</span>
+                    ) : (
+                      <span className="small gold-text fw-bold" style={{ fontSize: '0.6rem', letterSpacing: '1px' }}>ACTIVE</span>
                     )}
                   </div>
                 ))}

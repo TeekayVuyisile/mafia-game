@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { supabase } from '../supabaseClient';
+import { useEffect, useState } from 'react';
+import { authClient } from '../authClient';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Google, Envelope, Lock, Person, ShieldLock } from 'react-bootstrap-icons';
 import Notification from './Notification';
@@ -11,41 +11,38 @@ const Auth = () => {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [notification, setNotification] = useState(null);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/config')
+      .then(res => (res.ok ? res.json() : null))
+      .then(config => setGoogleEnabled(Boolean(config?.google)))
+      .catch(() => setGoogleEnabled(false));
+  }, []);
 
   const handleAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
     setNotification(null);
 
-    if (isSignUp) {
-      const { data, error } = await supabase.auth.signUp({ 
-        email, 
-        password,
-        options: {
-          data: { username } // This username will be picked up by the trigger!
-        }
-      });
+    // On success the session updates and App moves on to the Command Center
+    const { error } = isSignUp
+      ? await authClient.signUp.email({ email, password, name: username.trim() })
+      : await authClient.signIn.email({ email, password });
 
-      if (error) {
-        setNotification({ message: error.message, type: 'error' });
-      } else {
-        setNotification({ message: 'Sign up successful! Access the room via login.', type: 'success' });
-      }
-    } else {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) setNotification({ message: error.message, type: 'error' });
-    }
+    if (error) setNotification({ message: error.message || error.statusText || 'Authentication failed', type: 'error' });
     setLoading(false);
   };
 
   const handleGoogleLogin = async () => {
     setLoading(true);
     setNotification(null);
-    const { error } = await supabase.auth.signInWithOAuth({
+    const { error } = await authClient.signIn.social({
       provider: 'google',
+      callbackURL: window.location.origin
     });
     if (error) {
-      setNotification({ message: error.message, type: 'error' });
+      setNotification({ message: error.message || 'Google sign-in failed', type: 'error' });
       setLoading(false);
     }
   };
@@ -140,6 +137,7 @@ const Auth = () => {
               </button>
             </p>
             
+            {googleEnabled && (<>
             <div className="d-flex align-items-center mb-4">
               <hr className="flex-grow-1" style={{ borderColor: 'rgba(200, 169, 107, 0.2)' }} />
               <span className="mx-3 small" style={{ color: 'var(--text-secondary)', fontSize: '0.7rem' }}>SECURE LOGIN</span>
@@ -153,6 +151,7 @@ const Auth = () => {
             >
               <Google className="me-2" /> CONTINUE WITH GOOGLE
             </button>
+            </>)}
           </div>
         </div>
       </motion.div>
