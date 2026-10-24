@@ -13,6 +13,8 @@ A cinematic, realtime multiplayer Mafia party game built with the PERN stack (Po
 - **Identity Persistence:** Seamless reconnection support. If you lose your connection, the "Command Center" helps you intercept your previous frequency and jump back into the action.
 - **Account Management:** Authentication via Better Auth with accounts stored in Neon Postgres (Email/Password & optional Google), including customizable usernames.
 - **Host Game Settings:** Discussion and voting timers, anonymous or public votes (see who voted for whom), and optional role reveal on death. Hosts can also remove players from the lobby.
+- **Private Channels:** A Mafia-only line at night, and a graveyard chat where eliminated players can talk to each other.
+- **Detective (optional):** Host can enable a Detective for 6+ player games, who privately investigates one player each night.
 - **Smarter Voting:** Skip votes, and the ballot closes as soon as everyone has voted.
 - **Ranks & Progress:** Every finished game earns XP; levels unlock mafia ranks from Street Rat to Don, with a leaderboard of the top players.
 - **Your Dossier:** Pick an avatar, change your codename, track your stats, or permanently delete your account.

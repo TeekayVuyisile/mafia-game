@@ -14,7 +14,9 @@ const DISCUSSION_OPTIONS = [30, 60, 90, 120, 180].map(s => ({ value: s, label: s
 const VOTING_OPTIONS = [15, 30, 45, 60].map(s => ({ value: s, label: `${s}s` }));
 const VISIBILITY_OPTIONS = [{ value: 'anonymous', label: 'Anonymous' }, { value: 'public', label: 'Public' }];
 const REVEAL_OPTIONS = [{ value: false, label: 'Hidden' }, { value: true, label: 'Revealed' }];
-const DEFAULT_SETTINGS = { discussionTime: 60, votingTime: 30, voteVisibility: 'anonymous', revealRoleOnDeath: false };
+const DETECTIVE_OPTIONS = [{ value: false, label: 'Off' }, { value: true, label: 'On' }];
+const DETECTIVE_MIN_PLAYERS = 6;
+const DEFAULT_SETTINGS = { discussionTime: 60, votingTime: 30, voteVisibility: 'anonymous', revealRoleOnDeath: false, detective: false };
 
 const Segmented = ({ id, label, hint, options, value, onChange, disabled }) => (
   <div className="mb-3">
@@ -73,6 +75,11 @@ const Lobby = ({ roomCode, initialPlayers, settings: roomSettings, userId }) => 
   const isHost = players.find(p => p.userId === userId)?.isHost;
   const missing = Math.max(0, MIN_PLAYERS - players.length);
   const mafiaCount = players.length >= 7 ? 2 : 1;
+  const detectiveAllowed = players.length >= DETECTIVE_MIN_PLAYERS;
+  const detectiveCount = settings.detective && detectiveAllowed ? 1 : 0;
+  const detectiveHint = !detectiveAllowed
+    ? `Needs ${DETECTIVE_MIN_PLAYERS}+ players${settings.detective ? ', so it will be left out for now' : ''}.`
+    : settings.detective ? 'Investigates one player each night.' : 'Off: no Detective this game.';
 
   const handleLeave = () => {
       socket.emit('leave_room_explicitly', { roomCode });
@@ -266,11 +273,23 @@ const Lobby = ({ roomCode, initialPlayers, settings: roomSettings, userId }) => 
                   onChange={updateSetting('revealRoleOnDeath')}
                   disabled={!isHost}
                 />
+                <Segmented
+                  id="setting-detective"
+                  label="Detective"
+                  hint={detectiveHint}
+                  options={DETECTIVE_OPTIONS}
+                  value={settings.detective}
+                  onChange={updateSetting('detective')}
+                  disabled={!isHost}
+                />
 
                 <ul className="list-unstyled small mb-4 mt-2 pt-3 d-flex flex-column gap-2" style={{ ...muted, borderTop: '1px solid rgba(200, 169, 107, 0.12)' }}>
                   <li className="d-flex justify-content-between"><span>Mafia</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>{mafiaCount}</span></li>
                   <li className="d-flex justify-content-between"><span>Medic</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>1</span></li>
-                  <li className="d-flex justify-content-between"><span>Civilians</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>{Math.max(0, players.length - mafiaCount - 1)}</span></li>
+                  {detectiveCount > 0 && (
+                    <li className="d-flex justify-content-between"><span>Detective</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>1</span></li>
+                  )}
+                  <li className="d-flex justify-content-between"><span>Civilians</span><span className="fw-semibold" style={{ color: 'var(--text-primary)' }}>{Math.max(0, players.length - mafiaCount - 1 - detectiveCount)}</span></li>
                 </ul>
 
                 {isHost ? (

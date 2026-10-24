@@ -28,6 +28,7 @@ export const STATS_TABLE_SQL = `
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS player_stats_xp_idx ON player_stats (xp DESC);
+  ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS detective_wins INTEGER NOT NULL DEFAULT 0;
 `;
 
 export function describeProgress(xp = 0) {
@@ -50,7 +51,8 @@ function formatStats(row) {
     xp: row?.xp ?? 0,
     mafiaWins: row?.mafia_wins ?? 0,
     civilianWins: row?.civilian_wins ?? 0,
-    medicWins: row?.medic_wins ?? 0
+    medicWins: row?.medic_wins ?? 0,
+    detectiveWins: row?.detective_wins ?? 0
   };
   return { ...stats, losses: stats.gamesPlayed - stats.wins, ...describeProgress(stats.xp) };
 }
@@ -95,8 +97,8 @@ export async function recordGameResults(results) {
     for (const { userId, role, won, survived } of results) {
       const xp = xpForResult({ won, survived });
       await client.query(
-        `INSERT INTO player_stats (user_id, games_played, wins, xp, mafia_wins, civilian_wins, medic_wins)
-         VALUES ($1, 1, $2, $3, $4, $5, $6)
+        `INSERT INTO player_stats (user_id, games_played, wins, xp, mafia_wins, civilian_wins, medic_wins, detective_wins)
+         VALUES ($1, 1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (user_id) DO UPDATE SET
            games_played = player_stats.games_played + 1,
            wins = player_stats.wins + EXCLUDED.wins,
@@ -104,6 +106,7 @@ export async function recordGameResults(results) {
            mafia_wins = player_stats.mafia_wins + EXCLUDED.mafia_wins,
            civilian_wins = player_stats.civilian_wins + EXCLUDED.civilian_wins,
            medic_wins = player_stats.medic_wins + EXCLUDED.medic_wins,
+           detective_wins = player_stats.detective_wins + EXCLUDED.detective_wins,
            updated_at = now()`,
         [
           userId,
@@ -111,7 +114,8 @@ export async function recordGameResults(results) {
           xp,
           won && role === 'Mafia' ? 1 : 0,
           won && role === 'Civilian' ? 1 : 0,
-          won && role === 'Medic' ? 1 : 0
+          won && role === 'Medic' ? 1 : 0,
+          won && role === 'Detective' ? 1 : 0
         ]
       );
     }

@@ -184,6 +184,7 @@ const Settings = ({ user, onClose }) => {
                 <StatTile label="Wins as Mafia" value={stats.mafiaWins} />
                 <StatTile label="Wins as Civilian" value={stats.civilianWins} />
                 <StatTile label="Wins as Medic" value={stats.medicWins} />
+                <StatTile label="Wins as Detective" value={stats.detectiveWins ?? 0} />
               </div>
               <p className="small mt-4 mb-0" style={muted}>
                 Every finished game earns 20 XP, plus 80 for a win and 20 for surviving to the end.

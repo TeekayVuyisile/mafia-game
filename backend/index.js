@@ -40,8 +40,12 @@ const DEFAULT_SETTINGS = {
   discussionTime: 60,
   votingTime: 30,
   voteVisibility: 'anonymous',
-  revealRoleOnDeath: false
+  revealRoleOnDeath: false,
+  detective: false
 };
+// The Detective finds the Mafia too quickly in small games, so it needs at least this many players
+const DETECTIVE_MIN_PLAYERS = 6;
+const CHAT_CHANNELS = ['town', 'mafia', 'ghost'];
 
 app.use(cors());
 // Better Auth parses its own request bodies, so it must be mounted before express.json()
@@ -118,11 +122,12 @@ function pickNextHost(room) {
   return others.find(p => !p.disconnected) || others[0] || null;
 }
 
-const ROLE_ARTICLES = { Mafia: '', Medic: 'the ', Civilian: 'a ' };
+const ROLE_ARTICLES = { Mafia: '', Medic: 'the ', Detective: 'the ', Civilian: 'a ' };
 
 // Single place a player dies, so the optional role reveal applies to every kind of death
 function eliminate(room, player) {
   player.isAlive = false;
+  io.to(player.id).emit('chat_history', { channel: 'ghost', messages: room.ghostChat || [] });
   if (!room.settings.revealRoleOnDeath) return '';
   player.revealedRole = player.role;
   return ` They were ${ROLE_ARTICLES[player.role] ?? ''}${player.role}.`;
@@ -190,6 +195,9 @@ function getPlayerTarget(room, player) {
   if (room.gameState === 'Voting') return room.votes?.[player.userId] ?? null;
   if (room.subPhase === 'MafiaTurn' && player.role === 'Mafia') return room.nightActions?.kill ?? null;
   if (room.subPhase === 'MedicTurn' && player.role === 'Medic') return room.nightActions?.save ?? null;
+  if (room.subPhase === 'DetectiveTurn' && player.role === 'Detective') {
+    return room.investigations?.find(i => i.night === room.night)?.userId ?? null;
+  }
   return null;
 }
 
@@ -214,6 +222,10 @@ function buildSyncPayload(roomCode, room, player) {
     voteTally: room.gameState === 'Voting' ? tallyVotes(room.votes) : {},
     votes: room.gameState === 'Voting' ? getVoteState(room).votes : null,
     voteResult: room.gameState === 'NightResult' ? room.lastVoteResult : null,
+    mafiaChat: player.role === 'Mafia' ? room.mafiaChat : [],
+    ghostChat: player.role && !player.isAlive ? room.ghostChat : [],
+    investigations: player.role === 'Detective' ? room.investigations : [],
+    detectiveInPlay: room.detectiveInPlay,
     myTarget: getPlayerTarget(room, player),
     settings: room.settings,
     result: room.gameState === 'GameOver' ? room.result : null
@@ -227,6 +239,11 @@ function resetGameState(room) {
   room.nightActions = { kill: null, save: null };
   room.votes = {};
   room.chat = [];
+  room.mafiaChat = [];
+  room.ghostChat = [];
+  room.investigations = [];
+  room.night = 0;
+  room.detectiveInPlay = false;
   room.result = null;
   room.votesClosing = false;
   room.lastVoteResult = null;
@@ -341,6 +358,7 @@ io.on('connection', (socket) => {
     if (VOTING_TIMES.includes(settings.votingTime)) next.votingTime = settings.votingTime;
     if (VOTE_VISIBILITY.includes(settings.voteVisibility)) next.voteVisibility = settings.voteVisibility;
     if (typeof settings.revealRoleOnDeath === 'boolean') next.revealRoleOnDeath = settings.revealRoleOnDeath;
+    if (typeof settings.detective === 'boolean') next.detective = settings.detective;
     room.settings = next;
     updateLastActivity(roomCode);
     io.to(roomCode).emit('settings_updated', { settings: next });
@@ -376,10 +394,14 @@ io.on('connection', (socket) => {
       const playerCount = shuffledPlayers.length;
       let mafiaCount = playerCount >= 7 ? 2 : 1;
       let medicCount = 1;
+      // Dropped automatically if players left and the room fell below the minimum
+      room.detectiveInPlay = room.settings.detective && playerCount >= DETECTIVE_MIN_PLAYERS;
+      const detectiveCount = room.detectiveInPlay ? 1 : 0;
 
       shuffledPlayers.forEach((player, index) => {
         if (index < mafiaCount) player.role = 'Mafia';
         else if (index < (mafiaCount + medicCount)) player.role = 'Medic';
+        else if (index < (mafiaCount + medicCount + detectiveCount)) player.role = 'Detective';
         else player.role = 'Civilian';
         player.isAlive = true;
       });
@@ -394,6 +416,7 @@ io.on('connection', (socket) => {
           message: room.currentMessage,
           timer: 10,
           settings: room.settings,
+          detectiveInPlay: room.detectiveInPlay,
           players: getSanitizedPlayers(room.players)
         });
       });
@@ -426,6 +449,7 @@ io.on('connection', (socket) => {
     if (!room) return;
     clearRoomTimers(room);
     room.nightActions = { kill: null, save: null };
+    room.night += 1;
     broadcastPhase(roomCode, 'Night', 'Night falls. Everyone close your eyes. Mafia, open your eyes and pick a target.', 15, 'MafiaTurn');
     room.phaseTimerId = setTimeout(() => startMedicTurn(roomCode), 15000);
   }
@@ -435,6 +459,16 @@ io.on('connection', (socket) => {
     if (!room) return;
     clearRoomTimers(room);
     broadcastPhase(roomCode, 'Night', 'Mafia, close your eyes. Medic, open your eyes and pick someone to save.', 15, 'MedicTurn');
+    // The Detective's turn runs even after they die, so its absence never gives that away
+    const next = room.detectiveInPlay ? startDetectiveTurn : startDiscussionPhase;
+    room.phaseTimerId = setTimeout(() => next(roomCode), 15000);
+  }
+
+  function startDetectiveTurn(roomCode) {
+    const room = rooms[roomCode];
+    if (!room) return;
+    clearRoomTimers(room);
+    broadcastPhase(roomCode, 'Night', 'Medic, close your eyes. Detective, open your eyes and choose someone to investigate.', 15, 'DetectiveTurn');
     room.phaseTimerId = setTimeout(() => startDiscussionPhase(roomCode), 15000);
   }
 
@@ -449,7 +483,7 @@ io.on('connection', (socket) => {
       if (player) death = `${player.username} was found dead this morning.${eliminate(room, player)}`;
     }
 
-    const msg = 'Medic, close your eyes. Everyone, open your eyes! ' + death;
+    const msg = `${room.detectiveInPlay ? 'Detective' : 'Medic'}, close your eyes. Everyone, open your eyes! ${death}`;
     // Check before broadcasting so the death announcement is narrated as part of game over
     // instead of being cut off by it
     if (checkWinConditions(roomCode, msg)) return;
@@ -514,6 +548,23 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('submit_detective_action', ({ roomCode, targetUserId } = {}) => {
+    const room = rooms[roomCode];
+    const player = room?.players.find(p => p.id === socket.id);
+    const target = room?.players.find(p => p.userId === targetUserId);
+    if (!room || player?.role !== 'Detective' || !player.isAlive || room.subPhase !== 'DetectiveTurn'
+        || !target?.isAlive || target.userId === player.userId) return;
+    // One investigation per night, and the answer is final
+    if (room.investigations.some(i => i.night === room.night)) return;
+    updateLastActivity(roomCode);
+    const finding = { night: room.night, userId: target.userId, username: target.username, isMafia: target.role === 'Mafia' };
+    room.investigations.push(finding);
+    socket.emit('investigation_result', finding);
+    socket.emit('action_confirmed', {
+      message: `${target.username} is ${finding.isMafia ? 'MAFIA' : 'not Mafia'}. Keep it to yourself, or use it wisely. Close your eyes.`
+    });
+  });
+
   socket.on('submit_vote', ({ roomCode, targetUserId }) => {
     const room = rooms[roomCode];
     const player = room?.players.find(p => p.id === socket.id);
@@ -529,12 +580,21 @@ io.on('connection', (socket) => {
   socket.on('send_message', (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const { roomCode, message } = payload || {};
+    const channel = CHAT_CHANNELS.includes(payload?.channel) ? payload.channel : 'town';
     const room = rooms[roomCode];
     const player = room?.players.find(p => p.id === socket.id);
+    const inGame = room && !['Lobby', 'GameOver'].includes(room.gameState);
 
     if (!room || !player) return reply({ ok: false, error: 'You are not connected to this room.' });
-    if (room.gameState !== 'Discussion') return reply({ ok: false, error: 'Chat is only open during discussion.' });
-    if (!player.isAlive) return reply({ ok: false, error: 'The dead cannot speak.' });
+    if (channel === 'town') {
+      if (room.gameState !== 'Discussion') return reply({ ok: false, error: 'Chat is only open during discussion.' });
+      if (!player.isAlive) return reply({ ok: false, error: 'The dead cannot speak. Use the graveyard chat.' });
+    } else if (channel === 'mafia') {
+      if (player.role !== 'Mafia' || !player.isAlive) return reply({ ok: false, error: 'Only living Mafia can use this line.' });
+      if (room.gameState !== 'Night') return reply({ ok: false, error: 'The Mafia line only opens at night.' });
+    } else if (channel === 'ghost') {
+      if (!inGame || !player.role || player.isAlive) return reply({ ok: false, error: 'Only the dead can talk in the graveyard.' });
+    }
 
     const text = typeof message === 'string' ? message.trim().slice(0, MAX_CHAT_LENGTH) : '';
     if (!text) return reply({ ok: false, error: 'Message is empty.' });
@@ -549,15 +609,23 @@ io.on('connection', (socket) => {
     room.chatSeq = (room.chatSeq || 0) + 1;
     const chatMessage = {
       id: `${roomCode}-${room.chatSeq}`,
+      channel,
       userId: player.userId,
       username: player.username,
       message: text,
       timestamp: now
     };
-    room.chat.push(chatMessage);
-    if (room.chat.length > CHAT_HISTORY_LIMIT) room.chat.shift();
+    const history = channel === 'mafia' ? room.mafiaChat : channel === 'ghost' ? room.ghostChat : room.chat;
+    history.push(chatMessage);
+    if (history.length > CHAT_HISTORY_LIMIT) history.shift();
 
-    io.to(roomCode).emit('receive_message', chatMessage);
+    if (channel === 'town') {
+      io.to(roomCode).emit('receive_message', chatMessage);
+    } else {
+      // Private channels go only to their members (all Mafia / all dead players)
+      const members = room.players.filter(p => (channel === 'mafia' ? p.role === 'Mafia' : p.role && !p.isAlive));
+      for (const member of members) io.to(member.id).emit('receive_message', chatMessage);
+    }
     reply({ ok: true, id: chatMessage.id });
   });
 

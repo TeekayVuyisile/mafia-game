@@ -1,7 +1,8 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { socket } from '../socket';
 import { useNarrator } from '../useNarrator';
 import Avatar from './Avatar';
+import ChatPanel from './ChatPanel';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldPlus,
@@ -11,7 +12,6 @@ import {
   CheckCircleFill,
   XCircleFill,
   ArrowRepeat,
-  SendFill,
   PeopleFill,
   ExclamationTriangleFill,
   ForwardFill,
@@ -21,11 +21,12 @@ import {
   MoonStarsFill,
   PersonBadgeFill,
   Crosshair,
-  BoxArrowLeft
+  BoxArrowLeft,
+  Search,
+  ChatSquareQuoteFill,
+  Hurricane
 } from 'react-bootstrap-icons';
 import TopBar from './TopBar';
-
-const MAX_CHAT_LENGTH = 300;
 
 const toEndsAt = (seconds) => (typeof seconds === 'number' ? Date.now() + seconds * 1000 : null);
 
@@ -41,7 +42,7 @@ const PHASES = {
   NightResult: { label: 'Verdict', Icon: HourglassSplit, duration: 5 }
 };
 
-const SUB_PHASES = { MafiaTurn: "Mafia's turn", MedicTurn: "Medic's turn" };
+const SUB_PHASES = { MafiaTurn: "Mafia's turn", MedicTurn: "Medic's turn", DetectiveTurn: "Detective's turn" };
 
 const SKIP_VOTE = 'skip';
 
@@ -55,16 +56,13 @@ const phaseDuration = (gameState, settings) => {
 const ROLE_INFO = {
   Mafia: 'Choose one player to eliminate each night. Blend in during the day.',
   Medic: 'Each night, protect one player (yourself included) from the Mafia.',
+  Detective: 'Each night, investigate one player to learn whether they are Mafia. Share what you know carefully.',
   Civilian: 'Find the Mafia. Discuss, then vote out the most suspicious player.'
 };
 
 const muted = { color: 'var(--text-secondary)' };
 const cardTitle = { letterSpacing: '3px' };
 
-const formatTime = (timestamp) =>
-  typeof timestamp === 'number'
-    ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : timestamp;
 
 // `snapshot` is the state to mount into: a fresh game_started payload or a room_reconnected sync
 const Game = ({ roomCode, userId, snapshot }) => {
@@ -75,10 +73,10 @@ const Game = ({ roomCode, userId, snapshot }) => {
   const [now, setNow] = useState(() => Date.now());
   const [message, setMessage] = useState(snapshot.message || (snapshot.role ? `You are a ${snapshot.role}` : 'Wait for your role...'));
   const [players, setPlayers] = useState(snapshot.players || []);
-  const [chat, setChat] = useState(snapshot.chat || []);
-  const [inputMessage, setInputMessage] = useState('');
-  const [sending, setSending] = useState(false);
-  const [chatError, setChatError] = useState(null);
+  // town = discussion chat, mafia = private night line, ghost = graveyard for eliminated players
+  const [chats, setChats] = useState({ town: snapshot.chat || [], mafia: snapshot.mafiaChat || [], ghost: snapshot.ghostChat || [] });
+  // Detective case notes: [{ night, userId, username, isMafia }]
+  const [investigations, setInvestigations] = useState(snapshot.investigations || []);
   const [voteTally, setVoteTally] = useState(snapshot.voteTally || {});
   // voterId -> targetId, only populated when the host made votes public
   const [publicVotes, setPublicVotes] = useState(snapshot.votes || null);
@@ -92,8 +90,6 @@ const Game = ({ roomCode, userId, snapshot }) => {
   const [progress, setProgress] = useState(null);
   // Other Mafia players' userIds; only ever non-empty when we are Mafia
   const [teammates, setTeammates] = useState(snapshot.teammates || []);
-  const chatBoxRef = useRef(null);
-  const stickToBottom = useRef(true);
 
   const narrator = useNarrator();
   const { speak } = narrator;
@@ -118,7 +114,8 @@ const Game = ({ roomCode, userId, snapshot }) => {
       setMessage(data.message);
       setRole(data.role ?? null);
       if (data.players) setPlayers(data.players);
-      setChat(data.chat || []);
+      setChats({ town: data.chat || [], mafia: data.mafiaChat || [], ghost: data.ghostChat || [] });
+      setInvestigations(data.investigations || []);
       setVoteTally(data.voteTally || {});
       setPublicVotes(data.votes || null);
       setVoteResult(data.voteResult || null);
@@ -136,7 +133,6 @@ const Game = ({ roomCode, userId, snapshot }) => {
       setMessage(message);
       startPhaseClock(timer);
       setSelectedTarget(null);
-      setChatError(null);
       if (players) setPlayers(players);
       setVoteTally({});
       setPublicVotes(null);
@@ -151,8 +147,16 @@ const Game = ({ roomCode, userId, snapshot }) => {
       speak(message);
     };
 
-    const handleReceiveMessage = (msg) =>
-      setChat(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
+    const handleReceiveMessage = (msg) => {
+      const channel = msg.channel || 'town';
+      setChats(prev => (prev[channel]?.some(m => m.id === msg.id) ? prev : { ...prev, [channel]: [...(prev[channel] || []), msg] }));
+    };
+    // Full history for a channel we just gained access to (e.g. the graveyard on death)
+    const handleChatHistory = ({ channel, messages }) => setChats(prev => ({ ...prev, [channel]: messages || [] }));
+    const handleInvestigation = (finding) => {
+      setInvestigations(prev => (prev.some(i => i.night === finding.night) ? prev : [...prev, finding]));
+      setSelectedTarget(finding.userId);
+    };
     const handleActionConfirmed = ({ message }) => setMessage(message);
     const handleVoteUpdate = ({ tally, votes }) => {
       setVoteTally(tally);
@@ -177,6 +181,8 @@ const Game = ({ roomCode, userId, snapshot }) => {
     socket.on('room_reconnected', handleResync);
     socket.on('phase_change', handlePhaseChange);
     socket.on('receive_message', handleReceiveMessage);
+    socket.on('chat_history', handleChatHistory);
+    socket.on('investigation_result', handleInvestigation);
     socket.on('action_confirmed', handleActionConfirmed);
     socket.on('vote_update', handleVoteUpdate);
     socket.on('phase_timer', handlePhaseTimer);
@@ -192,6 +198,8 @@ const Game = ({ roomCode, userId, snapshot }) => {
       socket.off('room_reconnected', handleResync);
       socket.off('phase_change', handlePhaseChange);
       socket.off('receive_message', handleReceiveMessage);
+      socket.off('chat_history', handleChatHistory);
+      socket.off('investigation_result', handleInvestigation);
       socket.off('action_confirmed', handleActionConfirmed);
       socket.off('vote_update', handleVoteUpdate);
       socket.off('phase_timer', handlePhaseTimer);
@@ -214,22 +222,12 @@ const Game = ({ roomCode, userId, snapshot }) => {
 
   const timer = phaseEndsAt ? Math.max(0, Math.ceil((phaseEndsAt - now) / 1000)) : null;
 
-  // Follow new messages unless the player has scrolled up to read history
-  useEffect(() => {
-    const box = chatBoxRef.current;
-    if (box && stickToBottom.current) box.scrollTop = box.scrollHeight;
-  }, [chat, gameState]);
-
-  const handleChatScroll = () => {
-    const box = chatBoxRef.current;
-    if (box) stickToBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-  };
-
   const handleAction = (targetUserId) => {
     setSelectedTarget(targetUserId);
     if (gameState === 'Night') {
       if (role === 'Mafia' && subPhase === 'MafiaTurn') socket.emit('submit_mafia_action', { roomCode, targetUserId });
       else if (role === 'Medic' && subPhase === 'MedicTurn') socket.emit('submit_medic_action', { roomCode, targetUserId });
+      else if (role === 'Detective' && subPhase === 'DetectiveTurn') socket.emit('submit_detective_action', { roomCode, targetUserId });
     } else if (gameState === 'Voting') {
       socket.emit('submit_vote', { roomCode, targetUserId });
     }
@@ -243,24 +241,12 @@ const Game = ({ roomCode, userId, snapshot }) => {
     }
   };
 
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    const text = inputMessage.trim();
-    if (!text || sending) return;
-    // Socket.io buffers emits while offline and would replay them later, causing duplicates on retry
-    if (!socket.connected) return setChatError('Connection lost. Reconnecting...');
-
-    setSending(true);
-    setChatError(null);
-    stickToBottom.current = true;
-    socket.timeout(5000).emit('send_message', { roomCode, message: text }, (err, res) => {
-      setSending(false);
-      if (err) return setChatError('Message not delivered. Try again.');
-      if (!res?.ok) return setChatError(res?.error || 'Message rejected.');
-      // Keep anything typed while the message was in flight
-      setInputMessage(prev => (prev.trim() === text ? '' : prev));
+  // Resolves to the server ack so ChatPanel can keep the text on failure
+  const sendChat = (channel) => (text) => new Promise(resolve => {
+    socket.timeout(5000).emit('send_message', { roomCode, message: text, channel }, (err, res) => {
+      resolve(err ? { ok: false, error: 'Message not delivered. Try again.' } : res);
     });
-  };
+  });
 
   const getRoleIcon = (roleName) => {
     switch(roleName) {
@@ -275,6 +261,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
     switch(roleName) {
       case 'Mafia': return 'var(--role-mafia)';
       case 'Medic': return 'var(--role-medic)';
+      case 'Detective': return 'var(--role-detective)';
       case 'Civilian': return 'var(--role-civilian)';
       default: return 'var(--accent-gold)';
     }
@@ -433,7 +420,13 @@ const Game = ({ roomCode, userId, snapshot }) => {
       {voters.length > 5 && <span className="small ms-1" style={muted}>+{voters.length - 5}</span>}
     </span>
   );
-  const canActAtNight = gameState === 'Night' && isAlive && ((role === 'Mafia' && subPhase === 'MafiaTurn') || (role === 'Medic' && subPhase === 'MedicTurn'));
+  const canActAtNight = gameState === 'Night' && isAlive && (
+    (role === 'Mafia' && subPhase === 'MafiaTurn')
+    || (role === 'Medic' && subPhase === 'MedicTurn')
+    || (role === 'Detective' && subPhase === 'DetectiveTurn')
+  );
+  // The Detective gets one answer per night; lock the choices once it arrives
+  const investigationLocked = role === 'Detective' && subPhase === 'DetectiveTurn' && selectedTarget !== null;
   const canVote = gameState === 'Voting' && isAlive;
   const isTeammate = (playerId) => teammates.includes(playerId);
   const teamPlayers = players.filter(p => isTeammate(p.userId));
@@ -498,13 +491,15 @@ const Game = ({ roomCode, userId, snapshot }) => {
                     aria-labelledby="action-heading"
                   >
                     <h2 id="action-heading" className="h6 fw-bold gold-text mb-1 d-flex align-items-center" style={cardTitle}>
-                      {canVote ? <PeopleFill className="me-2" /> : role === 'Mafia' ? <Crosshair className="me-2" /> : <ShieldPlus className="me-2" />}
-                      {canVote ? 'CAST YOUR VOTE' : role === 'Mafia' ? 'CHOOSE YOUR TARGET' : 'CHOOSE WHO TO PROTECT'}
+                      {canVote ? <PeopleFill className="me-2" /> : role === 'Mafia' ? <Crosshair className="me-2" /> : role === 'Detective' ? <Search className="me-2" /> : <ShieldPlus className="me-2" />}
+                      {canVote ? 'CAST YOUR VOTE' : role === 'Mafia' ? 'CHOOSE YOUR TARGET' : role === 'Detective' ? 'CHOOSE WHO TO INVESTIGATE' : 'CHOOSE WHO TO PROTECT'}
                     </h2>
                     <p className="small mb-3" style={muted}>
                       {canVote
                         ? `You can change your vote until voting closes. ${settings?.voteVisibility === 'public' ? 'Votes are public: everyone sees who you pick.' : 'Votes are anonymous: only totals are shown.'}`
-                        : 'Your pick is secret. You can change it until your turn ends.'}
+                        : role === 'Detective'
+                          ? (investigationLocked ? 'Investigation complete. Check your case notes.' : 'One investigation per night. The answer is final.')
+                          : 'Your pick is secret. You can change it until your turn ends.'}
                     </p>
                     <div className="row g-2">
                       {targets.map(player => {
@@ -515,6 +510,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
                               type="button"
                               className="btn w-100 p-3 d-flex align-items-center gap-3 text-start rounded-3"
                               aria-pressed={selected}
+                              disabled={investigationLocked && !selected}
                               style={{
                                 border: `1px solid ${selected ? 'var(--accent-gold)' : 'rgba(200, 169, 107, 0.15)'}`,
                                 background: selected ? 'rgba(200, 169, 107, 0.12)' : 'rgba(255, 255, 255, 0.02)',
@@ -636,78 +632,62 @@ const Game = ({ roomCode, userId, snapshot }) => {
                 )}
               </AnimatePresence>
 
-              {/* Discussion chat */}
               {gameState === 'Discussion' && (
-                <section className="card glass-panel rounded-4 p-4" aria-labelledby="chat-heading">
-                  <h2 id="chat-heading" className="h6 fw-bold gold-text mb-3 d-flex align-items-center" style={cardTitle}>
-                    <ChatRightDotsFill className="me-2" /> TOWN SQUARE
-                  </h2>
-                  <div
-                    ref={chatBoxRef}
-                    onScroll={handleChatScroll}
-                    className="rounded-3 p-3 mb-3"
-                    style={{ height: '340px', overflowY: 'auto', background: 'rgba(0, 0, 0, 0.35)', border: '1px solid rgba(200, 169, 107, 0.1)' }}
-                    aria-live="polite"
-                  >
-                    {chat.length === 0 && (
-                      <p className="text-center mt-5 mb-0 small" style={muted}>No messages yet. Who do you suspect?</p>
-                    )}
-                    {chat.map((msg) => {
-                      const mine = msg.userId === userId;
-                      const author = players.find(p => p.userId === msg.userId);
-                      return (
-                        <div key={msg.id} className={`mb-3 d-flex gap-2 ${mine ? 'flex-row-reverse' : ''}`}>
-                          <Avatar image={author?.avatar} name={msg.username} size={30} />
-                          <div className={`d-flex flex-column ${mine ? 'align-items-end' : 'align-items-start'}`} style={{ maxWidth: '78%' }}>
-                            <small style={{ ...muted, fontSize: '0.72rem' }}>{mine ? 'You' : msg.username} · {formatTime(msg.timestamp)}</small>
-                            <div
-                              className="px-3 py-2 rounded-3 mt-1"
-                              style={{
-                                background: mine ? 'rgba(200, 169, 107, 0.14)' : 'rgba(255,255,255,0.06)',
-                                border: mine ? '1px solid rgba(200, 169, 107, 0.4)' : '1px solid transparent',
-                                color: 'var(--text-primary)',
-                                overflowWrap: 'anywhere'
-                              }}
-                            >
-                              {msg.message}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {isAlive ? (
-                    <>
-                      <form onSubmit={handleSendMessage} className="d-flex gap-2">
-                        <label htmlFor="chat-input" className="visually-hidden">Message</label>
-                        <input
-                          id="chat-input"
-                          type="text"
-                          className="form-control rounded-3 px-3"
-                          placeholder={connected ? 'Make your case…' : 'Reconnecting…'}
-                          value={inputMessage}
-                          maxLength={MAX_CHAT_LENGTH}
-                          onChange={(e) => setInputMessage(e.target.value)}
-                          style={{ background: '#000', minHeight: 48 }}
-                        />
-                        <button
-                          type="submit"
-                          disabled={sending || !connected || !inputMessage.trim()}
-                          className="btn btn-gold rounded-3 d-flex align-items-center justify-content-center"
-                          style={{ width: 52, minHeight: 48 }}
-                          aria-label="Send message"
-                        >
-                          {sending ? <span className="spinner-border spinner-border-sm" role="status" /> : <SendFill size={18} />}
-                        </button>
-                      </form>
-                      {chatError && (
-                        <small className="d-block mt-2" role="alert" style={{ color: '#ff8a80' }}>{chatError}</small>
-                      )}
-                    </>
-                  ) : (
-                    <p className="small text-center mb-0" style={muted}>The dead cannot speak, but you can still read along.</p>
-                  )}
-                </section>
+                <ChatPanel
+                  id="town-chat"
+                  channel="town"
+                  title="TOWN SQUARE"
+                  Icon={ChatRightDotsFill}
+                  messages={chats.town}
+                  players={players}
+                  userId={userId}
+                  connected={connected}
+                  canSend={isAlive}
+                  readOnlyNote="The dead cannot speak here. Talk to the others in the graveyard."
+                  placeholder="Make your case…"
+                  emptyText="No messages yet. Who do you suspect?"
+                  onSend={sendChat('town')}
+                  height={340}
+                />
+              )}
+
+              {role === 'Mafia' && gameState === 'Night' && (
+                <ChatPanel
+                  id="mafia-chat"
+                  channel="mafia"
+                  title="THE FAMILY LINE"
+                  Icon={ChatSquareQuoteFill}
+                  note="Only the Mafia can read this, and only at night."
+                  messages={chats.mafia}
+                  players={players}
+                  userId={userId}
+                  connected={connected}
+                  canSend={isAlive}
+                  readOnlyNote="You've been eliminated, so you can only listen in."
+                  placeholder="Plan tonight's hit…"
+                  emptyText={teammates.length ? 'Coordinate with your family before you strike.' : 'No family tonight. Notes to yourself only.'}
+                  onSend={sendChat('mafia')}
+                  height={220}
+                />
+              )}
+
+              {role && !isAlive && (
+                <ChatPanel
+                  id="ghost-chat"
+                  channel="ghost"
+                  title="THE GRAVEYARD"
+                  Icon={Hurricane}
+                  note="Only eliminated players can see this. The living can't hear you."
+                  messages={chats.ghost}
+                  players={players}
+                  userId={userId}
+                  connected={connected}
+                  canSend
+                  placeholder="Whisper from beyond…"
+                  emptyText="It's quiet down here. Say something to the others who fell."
+                  onSend={sendChat('ghost')}
+                  height={240}
+                />
               )}
             </div>
 
@@ -715,12 +695,14 @@ const Game = ({ roomCode, userId, snapshot }) => {
               {/* Role */}
               <section className="card glass-panel rounded-4 p-4" style={{ borderColor: getRoleColor(role) }} aria-labelledby="role-heading">
                 <div className="d-flex align-items-center gap-3">
-                  {role
+                  {role && getRoleIcon(role)
                     ? <img src={getRoleIcon(role)} alt="" style={{ width: 64, height: 64, objectFit: 'contain', filter: 'drop-shadow(0 0 10px var(--accent-gold-glow))' }} />
-                    : <PersonCircle size={56} style={muted} />}
+                    : role === 'Detective'
+                      ? <span className="d-inline-flex align-items-center justify-content-center rounded-3 flex-shrink-0" style={{ width: 64, height: 64, border: '1px solid var(--role-detective)', background: 'rgba(91, 141, 239, 0.12)' }}><Search size={28} color="var(--role-detective)" /></span>
+                      : <PersonCircle size={56} style={muted} />}
                   <div style={{ minWidth: 0 }}>
                     <span className="small d-block" style={{ ...muted, letterSpacing: '2px' }}>YOUR ROLE</span>
-                    <h2 id="role-heading" className="h4 fw-bold mb-0" style={{ color: getRoleColor(role), letterSpacing: '3px' }}>{role || 'Pending…'}</h2>
+                    <h2 id="role-heading" className="h4 fw-bold mb-0" style={{ color: role === 'Mafia' ? '#ff6b6b' : getRoleColor(role), letterSpacing: '3px' }}>{role || 'Pending…'}</h2>
                     {!isAlive && <span className="small" style={{ color: '#ff8a80' }}>Eliminated</span>}
                   </div>
                 </div>
@@ -742,6 +724,38 @@ const Game = ({ roomCode, userId, snapshot }) => {
                       </ul>
                     )}
                     <p className="small mb-0 mt-2" style={muted}>Only you can see this. You share one kill each night.</p>
+                  </div>
+                )}
+                {role === 'Detective' && (
+                  <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(91, 141, 239, 0.35)' }}>
+                    <span className="small d-block mb-2" style={{ ...muted, letterSpacing: '2px' }}>CASE NOTES</span>
+                    {investigations.length === 0 ? (
+                      <p className="small mb-0" style={muted}>No investigations yet. Your first one comes at night.</p>
+                    ) : (
+                      <ul className="list-unstyled mb-0 d-flex flex-column gap-2">
+                        {investigations.map(finding => {
+                          const suspect = players.find(p => p.userId === finding.userId);
+                          return (
+                            <li key={finding.night} className="d-flex align-items-center gap-2">
+                              <Avatar image={suspect?.avatar} name={finding.username} size={28} />
+                              <span className="small flex-grow-1 text-truncate" style={{ color: 'var(--text-primary)' }}>
+                                {finding.username}
+                                <span className="d-block" style={{ ...muted, fontSize: '0.7rem' }}>Night {finding.night}</span>
+                              </span>
+                              <span
+                                className="badge rounded-pill"
+                                style={finding.isMafia
+                                  ? { background: 'var(--role-mafia)', color: '#fff' }
+                                  : { border: '1px solid var(--role-medic)', color: '#7fd1a4' }}
+                              >
+                                {finding.isMafia ? 'MAFIA' : 'NOT MAFIA'}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    <p className="small mb-0 mt-2" style={muted}>Only you can see this.</p>
                   </div>
                 )}
               </section>
