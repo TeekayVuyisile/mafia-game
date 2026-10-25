@@ -16,7 +16,7 @@ const fetchJson = async (url) => {
 };
 
 const StatTile = ({ label, value }) => (
-  <div className="col-6 col-md-4">
+  <div className="col-6 col-md-3">
     <div className="glass-panel rounded-4 p-3 h-100 text-center">
       <div className="fs-3 fw-bold gold-text" style={{ fontFamily: 'var(--font-title)' }}>{value}</div>
       <div className="small text-uppercase" style={{ ...muted, letterSpacing: '1px', fontSize: '0.7rem' }}>{label}</div>
@@ -180,6 +180,7 @@ const Settings = ({ user, onClose }) => {
               <div className="row g-3">
                 <StatTile label="Games played" value={stats.gamesPlayed} />
                 <StatTile label="Wins" value={stats.wins} />
+                <StatTile label="Losses" value={stats.losses} />
                 <StatTile label="Win rate" value={`${winRate}%`} />
                 <StatTile label="Wins as Mafia" value={stats.mafiaWins} />
                 <StatTile label="Wins as Civilian" value={stats.civilianWins} />

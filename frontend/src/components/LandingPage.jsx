@@ -1,6 +1,5 @@
-import React from 'react';
 import { motion } from 'framer-motion';
-import { ShieldLock, PeopleFill, EyeSlashFill, ChatRightDotsFill, CheckCircleFill, ArrowRight } from 'react-bootstrap-icons';
+import { EyeSlashFill, ChatRightDotsFill, CheckCircleFill, ArrowRight } from 'react-bootstrap-icons';
 
 const LandingPage = ({ onEnter }) => {
   return (
@@ -57,7 +56,7 @@ const LandingPage = ({ onEnter }) => {
                 <EyeSlashFill size={40} className="gold-text" />
               </div>
               <h4 className="gold-text mb-3">Night Falls</h4>
-              <p className="text-secondary small">The city sleeps. The <span className="text-danger fw-bold">Mafia</span> selects a target to eliminate. The <span className="text-success fw-bold">Medic</span> chooses one person to protect from death.</p>
+              <p className="text-secondary small">The city sleeps. The <span className="text-danger fw-bold">Mafia</span> selects a target to eliminate. The <span className="text-success fw-bold">Medic</span> chooses one person to protect from death, and in larger games the <span className="fw-bold" style={{ color: 'var(--role-detective)' }}>Detective</span> quietly investigates a suspect.</p>
             </motion.div>
           </div>
 
@@ -111,6 +110,13 @@ const LandingPage = ({ onEnter }) => {
                 <img src="/medic.png" alt="Medic" style={{ width: '80px', marginBottom: '20px', filter: 'drop-shadow(0 0 10px rgba(46, 139, 87, 0.5))' }} />
                 <h5 className="text-success fw-bold">MEDIC</h5>
                 <p className="text-secondary small px-3">The guardian. Can save one person (including themselves) from a Mafia hit each night.</p>
+              </div>
+            </div>
+            <div className="col-md-3">
+              <div className="text-center">
+                <img src="/detective.png" alt="Detective" style={{ width: '80px', marginBottom: '20px', filter: 'drop-shadow(0 0 10px rgba(91, 141, 239, 0.5))' }} />
+                <h5 className="fw-bold" style={{ color: 'var(--role-detective)' }}>DETECTIVE</h5>
+                <p className="text-secondary small px-3">The investigator. Learns whether one player is Mafia each night. Optional, for games of 6 or more.</p>
               </div>
             </div>
             <div className="col-md-3">

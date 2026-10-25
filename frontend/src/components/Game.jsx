@@ -288,6 +288,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
     switch(roleName) {
       case 'Mafia': return '/mafia.png';
       case 'Medic': return '/medic.png';
+      case 'Detective': return '/detective.png';
       case 'Civilian': return '/civilian.png';
       default: return null;
     }
@@ -735,9 +736,7 @@ const Game = ({ roomCode, userId, snapshot }) => {
                 <div className="d-flex align-items-center gap-3">
                   {role && getRoleIcon(role)
                     ? <img src={getRoleIcon(role)} alt="" style={{ width: 64, height: 64, objectFit: 'contain', filter: 'drop-shadow(0 0 10px var(--accent-gold-glow))' }} />
-                    : role === 'Detective'
-                      ? <span className="d-inline-flex align-items-center justify-content-center rounded-3 flex-shrink-0" style={{ width: 64, height: 64, border: '1px solid var(--role-detective)', background: 'rgba(91, 141, 239, 0.12)' }}><Search size={28} color="var(--role-detective)" /></span>
-                      : <PersonCircle size={56} style={muted} />}
+                    : <PersonCircle size={56} style={muted} />}
                   <div style={{ minWidth: 0 }}>
                     <span className="small d-block" style={{ ...muted, letterSpacing: '2px' }}>YOUR ROLE</span>
                     <h2 id="role-heading" className="h4 fw-bold mb-0" style={{ color: role === 'Mafia' ? '#ff6b6b' : getRoleColor(role), letterSpacing: '3px' }}>{role || 'Pending…'}</h2>
