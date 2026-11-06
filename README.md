@@ -12,7 +12,6 @@ No time to gather four friends? This 90-second captioned walkthrough plays one f
 https://github.com/user-attachments/assets/62b0b1cd-9b31-47d0-aabe-c6186ea8e05b
 
 
-![Landing page](docs/screenshots/landing.jpg)
 
 ## Contents
 
