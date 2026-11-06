@@ -4,10 +4,17 @@ A cinematic, real-time multiplayer Mafia party game. Players are dealt secret ro
 
 **Live demo:** [mafia-game-opal.vercel.app](https://mafia-game-opal.vercel.app)
 
+## Demo video
+
+No time to gather four friends? This 90-second captioned walkthrough plays one full game from the Detective's point of view: sign in, host a room, set the rules, investigate at night, argue in chat, vote out the Mafia and earn XP.
+
+[![Watch the demo video](docs/demo/demo-poster.jpg)](docs/demo/mafia-demo.mp4)
+
 ![Landing page](docs/screenshots/landing.jpg)
 
 ## Contents
 
+- [Demo video](#demo-video)
 - [Overview](#overview)
 - [Roles](#roles)
 - [Features](#features)
