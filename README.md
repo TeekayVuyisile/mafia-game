@@ -1,4 +1,4 @@
-# Mafia: The Underground Society
+    # Mafia: The Underground Society
 
 A cinematic, real-time multiplayer Mafia party game. Players are dealt secret roles, scheme in private channels at night, argue their case by day, and vote to unmask the killers among them. Built with React, Express, Socket.io and PostgreSQL.
 
@@ -9,6 +9,10 @@ A cinematic, real-time multiplayer Mafia party game. Players are dealt secret ro
 No time to gather four friends? This 90-second captioned walkthrough plays one full game from the Detective's point of view: sign in, host a room, set the rules, investigate at night, argue in chat, vote out the Mafia and earn XP.
 
 [![Watch the demo video](docs/demo/demo-poster.jpg)](docs/demo/mafia-demo.mp4)
+
+
+https://github.com/user-attachments/assets/62b0b1cd-9b31-47d0-aabe-c6186ea8e05b
+
 
 ![Landing page](docs/screenshots/landing.jpg)
 
